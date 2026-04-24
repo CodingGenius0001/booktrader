@@ -469,16 +469,24 @@ export default function App() {
     });
   }
 
-  async function uploadImage(uri: string, path: string) {
-    if (!firebase.storage) {
+  async function uploadImage(uri: string, path: string): Promise<string | null> {
+    if (demoMode) {
       return uri;
     }
 
-    const response = await fetch(uri);
-    const blob = await response.blob();
-    const imageRef = ref(firebase.storage, path);
-    await uploadBytes(imageRef, blob);
-    return getDownloadURL(imageRef);
+    if (!firebase.storage) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const imageRef = ref(firebase.storage, path);
+      await uploadBytes(imageRef, blob);
+      return getDownloadURL(imageRef);
+    } catch {
+      return null;
+    }
   }
 
   async function publishListing(input: {

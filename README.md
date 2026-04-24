@@ -49,7 +49,7 @@ Create a Firebase project with:
 
 - Authentication: Google provider and Email/Password provider enabled
 - Firestore Database
-- Firebase Storage
+- Firebase Storage is optional. If you skip it, listings still publish, but book photos are not stored persistently.
 
 Deploy the rules in:
 
@@ -91,7 +91,6 @@ Add these GitHub repository secrets:
 - `EXPO_PUBLIC_FIREBASE_API_KEY`
 - `EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN`
 - `EXPO_PUBLIC_FIREBASE_PROJECT_ID`
-- `EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET`
 - `EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`
 - `EXPO_PUBLIC_FIREBASE_APP_ID`
 - `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`
@@ -99,5 +98,9 @@ Add these GitHub repository secrets:
 - `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`
 - `EXPO_PUBLIC_BOOK_AI_ENDPOINT`
 - `EXPO_PUBLIC_EAS_PROJECT_ID`
+
+Optional:
+
+- `EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET` for persistent listing photos.
 
 After a workflow run, download the artifact named `booktrader-debug-apk`.

@@ -99,8 +99,4 @@ Add these GitHub repository secrets:
 - `EXPO_PUBLIC_BOOK_AI_ENDPOINT`
 - `EXPO_PUBLIC_EAS_PROJECT_ID`
 
-Optional:
-
-- `EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET` for persistent listing photos.
-
 After a workflow run, download the artifact named `booktrader-debug-apk`.

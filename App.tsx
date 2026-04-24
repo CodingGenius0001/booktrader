@@ -1,7 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import * as Google from 'expo-auth-session/providers/google';
-import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import * as WebBrowser from 'expo-web-browser';
@@ -43,11 +42,10 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 
 import { firebase, hasFirebaseConfig } from './src/config/firebase';
 import { demoListings, demoOffers, demoUser } from './src/data/demo';
-import { inferBookFromImages, lookupBookFromGoogleBooks } from './src/services/bookAi';
+import { lookupBookFromGoogleBooks } from './src/services/bookAi';
 import { colors, radii, spacing } from './src/theme';
 import {
   BookDraft,
@@ -230,6 +228,7 @@ function mapListing(id: string, value: Record<string, unknown>): BookListing {
     ownerCity: String(value.ownerCity ?? ''),
     ownerCommunity: String(value.ownerCommunity ?? ''),
     ownerCoordinates: (value.ownerCoordinates as Coordinates | null) ?? null,
+    coverImageUrl: value.coverImageUrl ? String(value.coverImageUrl) : null,
     title: String(value.title ?? ''),
     author: String(value.author ?? ''),
     edition: String(value.edition ?? ''),
@@ -469,31 +468,9 @@ export default function App() {
     });
   }
 
-  async function uploadImage(uri: string, path: string): Promise<string | null> {
-    if (demoMode) {
-      return uri;
-    }
-
-    if (!firebase.storage) {
-      return null;
-    }
-
-    try {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      const imageRef = ref(firebase.storage, path);
-      await uploadBytes(imageRef, blob);
-      return getDownloadURL(imageRef);
-    } catch {
-      return null;
-    }
-  }
-
   async function publishListing(input: {
     draft: BookDraft;
     wants: string;
-    frontImageUri: string | null;
-    backImageUri: string | null;
   }) {
     if (!currentProfile) {
       return;
@@ -508,12 +485,6 @@ export default function App() {
       setBusy(true);
       const createdAt = now();
       const listingId = makeId('listing');
-      const frontImageUrl = input.frontImageUri
-        ? await uploadImage(input.frontImageUri, `${currentProfile.id}/listings/${listingId}-front.jpg`)
-        : null;
-      const backImageUrl = input.backImageUri
-        ? await uploadImage(input.backImageUri, `${currentProfile.id}/listings/${listingId}-back.jpg`)
-        : null;
 
       const listing: BookListing = {
         ...input.draft,
@@ -523,8 +494,9 @@ export default function App() {
         ownerCity: currentProfile.city,
         ownerCommunity: currentProfile.community,
         ownerCoordinates: currentProfile.coordinates ?? null,
-        frontImageUrl,
-        backImageUrl,
+        coverImageUrl: input.draft.coverImageUrl ?? null,
+        frontImageUrl: input.draft.coverImageUrl ?? null,
+        backImageUrl: null,
         wants: input.wants.trim(),
         status: 'open',
         claimedBy: null,
@@ -766,7 +738,6 @@ export default function App() {
         {activeTab === 'add' && (
           <AddListingScreen
             busy={busy}
-            onInfer={inferBookFromImages}
             onGoogleLookup={lookupBookFromGoogleBooks}
             onPublish={publishListing}
           />
@@ -1133,127 +1104,99 @@ function personalListingStatus(
 
 function AddListingScreen({
   busy,
-  onInfer,
   onGoogleLookup,
   onPublish,
 }: {
   busy: boolean;
-  onInfer: (frontUri: string, backUri: string) => Promise<BookDraft>;
   onGoogleLookup: (query: string) => Promise<BookDraft>;
   onPublish: (input: {
     draft: BookDraft;
     wants: string;
-    frontImageUri: string | null;
-    backImageUri: string | null;
   }) => Promise<void>;
 }) {
-  const [frontImageUri, setFrontImageUri] = useState<string | null>(null);
-  const [backImageUri, setBackImageUri] = useState<string | null>(null);
   const [draft, setDraft] = useState<BookDraft>(emptyDraft);
   const [wants, setWants] = useState('');
   const [autofilling, setAutofilling] = useState(false);
+  const lookupTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function pickImage(side: 'front' | 'back', source: 'camera' | 'library') {
-    const permission =
-      source === 'camera'
-        ? await ImagePicker.requestCameraPermissionsAsync()
-        : await ImagePicker.requestMediaLibraryPermissionsAsync();
-
-    if (permission.status !== 'granted') {
-      Alert.alert('Permission required', 'Allow photo access to add book images.');
-      return;
-    }
-
-    const result =
-      source === 'camera'
-        ? await ImagePicker.launchCameraAsync({
-            mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            quality: 0.75,
-            allowsEditing: true,
-          })
-        : await ImagePicker.launchImageLibraryAsync({
-            mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            quality: 0.75,
-            allowsEditing: true,
-          });
-
-    if (result.canceled) {
-      return;
-    }
-
-    if (side === 'front') {
-      setFrontImageUri(result.assets[0].uri);
-    } else {
-      setBackImageUri(result.assets[0].uri);
-    }
+  async function runLookup(query: string) {
+    const next = await onGoogleLookup(query);
+    setDraft((current) => ({
+      ...current,
+      ...next,
+      title: current.title,
+    }));
   }
 
-  async function runAutofill() {
-    if (!frontImageUri || !backImageUri) {
-      Alert.alert('Add both photos', 'Capture the front and back cover before running autofill.');
+  useEffect(() => {
+    if (lookupTimer.current) {
+      clearTimeout(lookupTimer.current);
+    }
+
+    const title = draft.title.trim();
+
+    if (title.length < 3) {
       return;
     }
 
-    try {
+    let cancelled = false;
+    lookupTimer.current = setTimeout(() => {
       setAutofilling(true);
-      const next = await onInfer(frontImageUri, backImageUri);
-      setDraft((current) => ({ ...current, ...next }));
-    } catch (error) {
-      Alert.alert('Autofill unavailable', error instanceof Error ? error.message : 'Try again.');
-    } finally {
-      setAutofilling(false);
-    }
-  }
+      onGoogleLookup(title)
+        .then((next) => {
+          if (cancelled) {
+            return;
+          }
 
-  async function runGoogleLookup() {
-    const query = [draft.title, draft.author].filter(Boolean).join(' ');
+          setDraft((current) => ({
+            ...current,
+            ...next,
+            title: current.title,
+          }));
+        })
+        .catch(() => undefined)
+        .finally(() => setAutofilling(false));
+    }, 600);
 
-    if (!query.trim()) {
-      Alert.alert('Search text required', 'Enter a title or author first.');
-      return;
-    }
-
-    try {
-      setAutofilling(true);
-      const next = await onGoogleLookup(query);
-      setDraft((current) => ({ ...current, ...next }));
-    } catch (error) {
-      Alert.alert('Lookup failed', error instanceof Error ? error.message : 'Try again.');
-    } finally {
-      setAutofilling(false);
-    }
-  }
+    return () => {
+      cancelled = true;
+      if (lookupTimer.current) {
+        clearTimeout(lookupTimer.current);
+      }
+    };
+  }, [draft.title, onGoogleLookup]);
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.scrollContent}>
       <Text style={styles.sectionTitle}>New Listing</Text>
-      <View style={styles.photoGrid}>
-        <PhotoPicker
-          label="Front"
-          uri={frontImageUri}
-          onCamera={() => pickImage('front', 'camera')}
-          onLibrary={() => pickImage('front', 'library')}
-        />
-        <PhotoPicker
-          label="Back"
-          uri={backImageUri}
-          onCamera={() => pickImage('back', 'camera')}
-          onLibrary={() => pickImage('back', 'library')}
-        />
-      </View>
       <View style={styles.actionRow}>
         <SecondaryButton
-          label="AI autofill"
-          icon="sparkles-outline"
-          loading={autofilling}
-          onPress={runAutofill}
-        />
-        <SecondaryButton
-          label="Google Books"
+          label="Refresh lookup"
           icon="library-outline"
           loading={autofilling}
-          onPress={runGoogleLookup}
+          onPress={() => {
+            if (!draft.title.trim()) {
+              Alert.alert('Title required', 'Enter a book title first.');
+              return;
+            }
+
+            setAutofilling(true);
+            runLookup(draft.title)
+              .catch(() => undefined)
+              .finally(() => setAutofilling(false));
+          }}
         />
+      </View>
+      <View style={styles.coverPreviewWrap}>
+        <Text style={styles.label}>Cover preview</Text>
+        {draft.coverImageUrl ? (
+          <Image source={{ uri: draft.coverImageUrl }} style={styles.coverPreview} />
+        ) : (
+          <View style={styles.coverPreviewFallback}>
+            <Ionicons name="book-outline" size={32} color={colors.teal} />
+            <Text style={styles.mutedText}>Type a title to fetch a cover from Google Books.</Text>
+          </View>
+        )}
       </View>
       <Field
         label="Title"
@@ -1287,7 +1230,7 @@ function AddListingScreen({
         label="Publish for 14 days"
         icon="cloud-upload-outline"
         loading={busy}
-        onPress={() => onPublish({ draft, wants, frontImageUri, backImageUri })}
+        onPress={() => onPublish({ draft, wants })}
       />
     </ScrollView>
   );
@@ -1457,7 +1400,7 @@ function ListingCard({
 }) {
   return (
     <Pressable style={styles.listingCard} onPress={onPress} disabled={!onPress}>
-      <BookCover uri={listing.frontImageUrl} size="large" />
+      <BookCover uri={listing.coverImageUrl ?? listing.frontImageUrl} size="large" />
       <View style={styles.listingContent}>
         <View style={styles.listingTitleRow}>
           <Text style={styles.cardTitle} numberOfLines={1}>
@@ -1496,7 +1439,7 @@ function CompactListingCard({
 }) {
   return (
     <Pressable style={styles.compactCard} onPress={onPress}>
-      <BookCover uri={listing.frontImageUrl} size="compact" />
+      <BookCover uri={listing.coverImageUrl ?? listing.frontImageUrl} size="compact" />
       <Text style={styles.compactTitle} numberOfLines={2}>
         {listing.title}
       </Text>
@@ -1670,35 +1613,6 @@ function TradeCard({
           ))}
         </View>
       )}
-    </View>
-  );
-}
-
-function PhotoPicker({
-  label,
-  uri,
-  onCamera,
-  onLibrary,
-}: {
-  label: string;
-  uri: string | null;
-  onCamera: () => void;
-  onLibrary: () => void;
-}) {
-  return (
-    <View style={styles.photoPicker}>
-      {uri ? (
-        <Image source={{ uri }} style={styles.photoPreview} />
-      ) : (
-        <View style={styles.photoPlaceholder}>
-          <Ionicons name="image-outline" size={30} color={colors.teal} />
-          <Text style={styles.photoLabel}>{label}</Text>
-        </View>
-      )}
-      <View style={styles.photoActions}>
-        <IconButton icon="camera-outline" onPress={onCamera} />
-        <IconButton icon="images-outline" onPress={onLibrary} />
-      </View>
     </View>
   );
 }
@@ -2155,6 +2069,30 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
     padding: spacing.xs,
+  },
+  coverPreviewWrap: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+    overflow: 'hidden',
+    padding: spacing.md,
+  },
+  coverPreview: {
+    aspectRatio: 0.7,
+    borderRadius: radii.sm,
+    width: '100%',
+  },
+  coverPreviewFallback: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radii.sm,
+    gap: spacing.sm,
+    justifyContent: 'center',
+    minHeight: 180,
+    padding: spacing.lg,
   },
   actionRow: {
     flexDirection: 'row',

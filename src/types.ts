@@ -27,6 +27,7 @@ export type BookDraft = {
   edition: string;
   description: string;
   isbn?: string;
+  coverImageUrl?: string | null;
 };
 
 export type BookListing = BookDraft & {
@@ -36,6 +37,7 @@ export type BookListing = BookDraft & {
   ownerCity: string;
   ownerCommunity: string;
   ownerCoordinates?: Coordinates | null;
+  coverImageUrl?: string | null;
   frontImageUrl?: string | null;
   backImageUrl?: string | null;
   wants: string;

@@ -8,8 +8,7 @@ BookTrader is a cross-platform Expo app for local book trades in Prestige Shanti
 - Legal-name onboarding, city, community, optional wishlist
 - Marketplace with nearby distance in meters/kilometers
 - Suggested matches from wishlist text
-- Front/back book photos
-- AI book-detail autofill through a secure backend endpoint
+- Google Books cover lookup from the title the user enters
 - Google Books fallback lookup from title/author
 - Editable title, author, edition, and description fields
 - Trade requests with open, claimed, completed listing status
@@ -78,10 +77,6 @@ Add the OAuth client IDs to `.env`:
 
 For Android APKs built by GitHub Actions, add the debug keystore SHA-1 to the Android OAuth client if you want Google sign-in to work in the debug artifact.
 
-## AI Autofill
-
-Set `EXPO_PUBLIC_BOOK_AI_ENDPOINT` to a backend endpoint that accepts front/back image base64 and returns book metadata. The contract is documented in `firebase/book-autofill-contract.md`.
-
 ## GitHub Actions APK
 
 The workflow at `.github/workflows/android-apk.yml` builds a debug APK on push, pull request, or manual dispatch.
@@ -96,7 +91,6 @@ Add these GitHub repository secrets:
 - `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`
 - `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`
 - `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`
-- `EXPO_PUBLIC_BOOK_AI_ENDPOINT`
 - `EXPO_PUBLIC_EAS_PROJECT_ID`
 
 After a workflow run, download the artifact named `booktrader-debug-apk`.

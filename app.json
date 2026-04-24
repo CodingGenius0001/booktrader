@@ -1,7 +1,8 @@
 {
   "expo": {
     "name": "BookTrader",
-    "slug": "BookTrader",
+    "slug": "booktrader",
+    "scheme": "booktrader",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -13,16 +14,51 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.booktrader.booktrade",
+      "infoPlist": {
+        "NSCameraUsageDescription": "BookTrader uses the camera to capture front and back book covers.",
+        "NSPhotoLibraryUsageDescription": "BookTrader uses your photo library to add book cover images.",
+        "NSLocationWhenInUseUsageDescription": "BookTrader uses location to show approximate meetup distance."
+      }
     },
     "android": {
+      "package": "com.booktrader.booktrade",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "POST_NOTIFICATIONS",
+        "READ_MEDIA_IMAGES"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#F5F7F4"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "BookTrader uses the camera to capture front and back book covers.",
+          "photosPermission": "BookTrader uses your photo library to add book cover images."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "BookTrader uses location to show approximate meetup distance."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#0F766E"
+        }
+      ]
+    ],
     "web": {
       "favicon": "./assets/favicon.png"
     }

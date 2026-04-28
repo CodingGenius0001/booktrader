@@ -44,6 +44,7 @@ export async function lookupBookFromGoogleBooks(query: string) {
     edition: item.publishedDate,
     description: item.description,
     isbn: item.industryIdentifiers?.[0]?.identifier,
-    coverImageUrl: item.imageLinks?.thumbnail ?? item.imageLinks?.smallThumbnail ?? null,
+    coverImageUrl: (item.imageLinks?.thumbnail ?? item.imageLinks?.smallThumbnail ?? null)
+      ?.replace(/^http:\/\//, 'https://') ?? null,
   });
 }

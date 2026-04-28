@@ -232,7 +232,9 @@ function mapListing(id: string, value: Record<string, unknown>): BookListing {
     ownerCity: String(value.ownerCity ?? ''),
     ownerCommunity: String(value.ownerCommunity ?? ''),
     ownerCoordinates: (value.ownerCoordinates as Coordinates | null) ?? null,
-    coverImageUrl: value.coverImageUrl ? String(value.coverImageUrl) : null,
+    coverImageUrl: value.coverImageUrl
+      ? String(value.coverImageUrl).replace(/^http:\/\//, 'https://')
+      : null,
     title: String(value.title ?? ''),
     author: String(value.author ?? ''),
     edition: String(value.edition ?? ''),
@@ -774,7 +776,19 @@ export default function App() {
       <AuthScreen
         busy={busy}
         onEmailAuth={handleEmailAuth}
-        onGoogle={() => promptGoogle()}
+        onGoogle={() => {
+          if (
+            Platform.OS === 'android' &&
+            !process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID
+          ) {
+            Alert.alert(
+              'Google Sign-In not configured',
+              'Add EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID to your GitHub secrets and rebuild.',
+            );
+            return;
+          }
+          promptGoogle();
+        }}
         onDemo={() => setDemoMode(true)}
       />
     );

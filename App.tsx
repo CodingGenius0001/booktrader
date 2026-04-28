@@ -78,7 +78,6 @@ const DEFAULT_COMMUNITY = 'Prestige Shantiniketan, Whitefield';
 const DEFAULT_CITY = 'Bengaluru';
 const CURRENT_BUILD = parseInt(process.env.EXPO_PUBLIC_BUILD_NUMBER ?? '0', 10);
 const GITHUB_REPO = 'CodingGenius0001/booktrader';
-const APK_DOWNLOAD_URL = `https://github.com/${GITHUB_REPO}/releases/latest/download/booktrader.apk`;
 
 const emptyDraft: BookDraft = {
   title: '',
@@ -410,12 +409,13 @@ export default function App() {
         if (!data?.tag_name) return;
         const latestBuild = parseInt(data.tag_name.replace('build-', ''), 10);
         if (!isNaN(latestBuild) && latestBuild > CURRENT_BUILD) {
+          const apkUrl = `https://github.com/${GITHUB_REPO}/releases/download/${data.tag_name}/booktrader.apk`;
           Alert.alert(
             'Update available',
             `Build ${latestBuild} is ready (you have build ${CURRENT_BUILD}). Download the latest APK to get new features.`,
             [
               { text: 'Later', style: 'cancel' },
-              { text: 'Download update', onPress: () => Linking.openURL(APK_DOWNLOAD_URL) },
+              { text: 'Download update', onPress: () => Linking.openURL(apkUrl) },
             ],
           );
         }

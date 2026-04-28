@@ -1,9 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
-import * as Google from 'expo-auth-session/providers/google';
+import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
-import * as WebBrowser from 'expo-web-browser';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -59,7 +58,10 @@ import {
   UserProfile,
 } from './src/types';
 
-WebBrowser.maybeCompleteAuthSession();
+GoogleSignin.configure({
+  webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+  offlineAccess: false,
+});
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -281,14 +283,6 @@ export default function App() {
 
   const updateChecked = React.useRef(false);
 
-  // Android-type OAuth clients cannot be used in browser-based flows (expo-auth-session
-  // uses Chrome Custom Tabs). Use the web client ID on all platforms so the authorization
-  // code flow works. The redirect URI com.booktrader.booktrade:/oauthredirect must be
-  // registered in the web OAuth client in Google Cloud Console.
-  const [, googleResponse, promptGoogle] = Google.useIdTokenAuthRequest({
-    clientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-  });
 
   const currentProfile = demoMode ? demoProfile : profile;
   const currentUserId = currentProfile?.id ?? firebaseUser?.uid ?? null;
@@ -354,46 +348,6 @@ export default function App() {
     });
   }, [currentUserId, demoMode]);
 
-  useEffect(() => {
-    if (!firebase.auth || !firebase.db || !googleResponse || googleResponse.type !== 'success') {
-      return;
-    }
-
-    const idToken = googleResponse.authentication?.idToken;
-
-    if (!idToken) {
-      Alert.alert('Google sign-in failed', 'Google did not return an ID token.');
-      return;
-    }
-
-    const credential = GoogleAuthProvider.credential(idToken);
-    const db = firebase.db;
-    signInWithCredential(firebase.auth, credential)
-      .then(async (result) => {
-        const info = getAdditionalUserInfo(result);
-        if (info?.isNewUser && db) {
-          await setDoc(
-            doc(db, 'users', result.user.uid),
-            {
-              legalName: result.user.displayName ?? '',
-              email: result.user.email ?? '',
-              city: DEFAULT_CITY,
-              community: DEFAULT_COMMUNITY,
-              coordinates: null,
-              wishlist: [],
-              photoUrl: result.user.photoURL ?? null,
-              ratingAverage: 0,
-              ratingCount: 0,
-              updatedAt: now(),
-            },
-            { merge: true },
-          );
-        }
-      })
-      .catch((error) => {
-        Alert.alert('Google sign-in failed', error.message);
-      });
-  }, [googleResponse]);
 
   useEffect(() => {
     if (currentUserId && !demoMode) {
@@ -475,6 +429,52 @@ export default function App() {
       }
     } catch (error) {
       Alert.alert('Authentication failed', error instanceof Error ? error.message : 'Try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleGoogleSignIn() {
+    if (!firebase.auth || !firebase.db) {
+      Alert.alert('Firebase is not configured', 'Add your Firebase values to .env first.');
+      return;
+    }
+    try {
+      setBusy(true);
+      await GoogleSignin.hasPlayServices();
+      await GoogleSignin.signIn();
+      const { idToken } = await GoogleSignin.getTokens();
+      if (!idToken) {
+        throw new Error('Google did not return an ID token.');
+      }
+      const credential = GoogleAuthProvider.credential(idToken);
+      const db = firebase.db;
+      const result = await signInWithCredential(firebase.auth, credential);
+      const info = getAdditionalUserInfo(result);
+      if (info?.isNewUser) {
+        await setDoc(
+          doc(db, 'users', result.user.uid),
+          {
+            legalName: result.user.displayName ?? '',
+            email: result.user.email ?? '',
+            city: DEFAULT_CITY,
+            community: DEFAULT_COMMUNITY,
+            coordinates: null,
+            wishlist: [],
+            photoUrl: result.user.photoURL ?? null,
+            ratingAverage: 0,
+            ratingCount: 0,
+            updatedAt: now(),
+          },
+          { merge: true },
+        );
+      }
+    } catch (error: unknown) {
+      if (error && typeof error === 'object' && 'code' in error) {
+        const code = (error as { code: string }).code;
+        if (code === statusCodes.SIGN_IN_CANCELLED || code === statusCodes.IN_PROGRESS) return;
+      }
+      Alert.alert('Google sign-in failed', error instanceof Error ? error.message : 'Try again.');
     } finally {
       setBusy(false);
     }
@@ -779,16 +779,7 @@ export default function App() {
       <AuthScreen
         busy={busy}
         onEmailAuth={handleEmailAuth}
-        onGoogle={() => {
-          if (!process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID) {
-            Alert.alert(
-              'Google Sign-In not configured',
-              'Add EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID to your GitHub secrets and rebuild.',
-            );
-            return;
-          }
-          promptGoogle();
-        }}
+        onGoogle={handleGoogleSignIn}
         onDemo={() => setDemoMode(true)}
       />
     );

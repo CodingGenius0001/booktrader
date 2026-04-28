@@ -24,6 +24,7 @@ import {
   GoogleAuthProvider,
   User,
   createUserWithEmailAndPassword,
+  getAdditionalUserInfo,
   onAuthStateChanged,
   signInWithCredential,
   signInWithEmailAndPassword,
@@ -356,9 +357,32 @@ export default function App() {
     }
 
     const credential = GoogleAuthProvider.credential(idToken);
-    signInWithCredential(firebase.auth, credential).catch((error) => {
-      Alert.alert('Google sign-in failed', error.message);
-    });
+    const db = firebase.db;
+    signInWithCredential(firebase.auth, credential)
+      .then(async (result) => {
+        const info = getAdditionalUserInfo(result);
+        if (info?.isNewUser && db) {
+          await setDoc(
+            doc(db, 'users', result.user.uid),
+            {
+              legalName: result.user.displayName ?? '',
+              email: result.user.email ?? '',
+              city: DEFAULT_CITY,
+              community: DEFAULT_COMMUNITY,
+              coordinates: null,
+              wishlist: [],
+              photoUrl: result.user.photoURL ?? null,
+              ratingAverage: 0,
+              ratingCount: 0,
+              updatedAt: now(),
+            },
+            { merge: true },
+          );
+        }
+      })
+      .catch((error) => {
+        Alert.alert('Google sign-in failed', error.message);
+      });
   }, [googleResponse]);
 
   useEffect(() => {
@@ -673,13 +697,26 @@ export default function App() {
       return;
     }
 
-    await addDoc(collection(firebase.db, 'ratings'), {
+    const db = firebase.db;
+    await addDoc(collection(db, 'ratings'), {
       offerId: offer.id,
       fromUserId: currentProfile.id,
       toUserId: ratedUserId,
       rating,
       createdAt: now(),
     });
+
+    const ratingsSnap = await getDocs(
+      query(collection(db, 'ratings'), where('toUserId', '==', ratedUserId)),
+    );
+    const allRatings = ratingsSnap.docs.map((d) => d.data().rating as number);
+    const ratingCount = allRatings.length;
+    const ratingAverage = allRatings.reduce((a, b) => a + b, 0) / ratingCount;
+    await updateDoc(doc(db, 'users', ratedUserId), {
+      ratingAverage: Math.round(ratingAverage * 10) / 10,
+      ratingCount,
+    });
+
     Alert.alert('Rating saved', `${rating} star rating recorded for this trade.`);
   }
 
@@ -830,75 +867,81 @@ function AuthScreen({
       <StatusBar style="dark" />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.authWrap}
+        style={styles.flexOne}
       >
-        <View style={styles.authHero}>
-          <Text style={styles.brandLarge}>BookTrader</Text>
-          <Text style={styles.authHeadline}>Local book trades for Prestige Shantiniketan.</Text>
-          <Text style={styles.authSubtext}>
-            List books, discover wishlist matches nearby, and complete meetup trades with neighbors.
-          </Text>
-        </View>
+        <ScrollView
+          contentContainerStyle={styles.authScroll}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.authHero}>
+            <Text style={styles.brandLarge}>BookTrader</Text>
+            <Text style={styles.authHeadline}>Local book trades for Prestige Shantiniketan.</Text>
+            <Text style={styles.authSubtext}>
+              List books, discover wishlist matches nearby, and complete meetup trades with neighbors.
+            </Text>
+          </View>
 
-        <View style={styles.authPanel}>
-          <SegmentedControl
-            value={mode}
-            onChange={(next) => setMode(next as AuthMode)}
-            options={[
-              { label: 'Login', value: 'login' },
-              { label: 'Register', value: 'register' },
-            ]}
-          />
-          {mode === 'register' && (
-            <>
-              <Field
-                label="Legal name"
-                value={legalName}
-                onChangeText={setLegalName}
-                autoCapitalize="words"
-              />
-              <Field label="City" value={city} onChangeText={setCity} autoCapitalize="words" />
-              <Field
-                label="Community"
-                value={community}
-                onChangeText={setCommunity}
-                autoCapitalize="words"
-              />
-            </>
-          )}
-          <Field
-            label="Email"
-            value={email}
-            onChangeText={setEmail}
-            keyboardType="email-address"
-            autoCapitalize="none"
-          />
-          <Field
-            label="Password"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-          />
-          <PrimaryButton
-            label={mode === 'login' ? 'Continue' : 'Create account'}
-            icon="mail-outline"
-            loading={busy}
-            onPress={() =>
-              onEmailAuth({
-                mode,
-                email,
-                password,
-                legalName,
-                city,
-                community,
-              })
-            }
-          />
-          <SecondaryButton label="Continue with Google" icon="logo-google" onPress={onGoogle} />
-          <Pressable onPress={onDemo} style={styles.demoLink}>
-            <Text style={styles.demoLinkText}>Preview without Firebase credentials</Text>
-          </Pressable>
-        </View>
+          <View style={styles.authPanel}>
+            <SegmentedControl
+              value={mode}
+              onChange={(next) => setMode(next as AuthMode)}
+              options={[
+                { label: 'Login', value: 'login' },
+                { label: 'Register', value: 'register' },
+              ]}
+            />
+            {mode === 'register' && (
+              <>
+                <Field
+                  label="Legal name"
+                  value={legalName}
+                  onChangeText={setLegalName}
+                  autoCapitalize="words"
+                />
+                <Field label="City" value={city} onChangeText={setCity} autoCapitalize="words" />
+                <Field
+                  label="Community"
+                  value={community}
+                  onChangeText={setCommunity}
+                  autoCapitalize="words"
+                />
+              </>
+            )}
+            <Field
+              label="Email"
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+            <Field
+              label="Password"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+            />
+            <PrimaryButton
+              label={mode === 'login' ? 'Continue' : 'Create account'}
+              icon="mail-outline"
+              loading={busy}
+              onPress={() =>
+                onEmailAuth({
+                  mode,
+                  email,
+                  password,
+                  legalName,
+                  city,
+                  community,
+                })
+              }
+            />
+            <SecondaryButton label="Continue with Google" icon="logo-google" onPress={onGoogle} />
+            <Pressable onPress={onDemo} style={styles.demoLink}>
+              <Text style={styles.demoLinkText}>Preview without Firebase credentials</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -928,47 +971,56 @@ function ProfileOnboarding({
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={styles.onboarding}>
-        <Text style={styles.brand}>BookTrader</Text>
-        <Text style={styles.sectionTitle}>Finish your profile</Text>
-        <Text style={styles.mutedText}>{email}</Text>
-        <Field
-          label="Legal name"
-          value={legalName}
-          onChangeText={setLegalName}
-          autoCapitalize="words"
-        />
-        <Field label="City" value={city} onChangeText={setCity} autoCapitalize="words" />
-        <Field
-          label="Community"
-          value={community}
-          onChangeText={setCommunity}
-          autoCapitalize="words"
-        />
-        <Field
-          label="Wishlist"
-          value={wishlistText}
-          onChangeText={setWishlistText}
-          placeholder="Atomic Habits, Ikigai, Harry Potter"
-          multiline
-        />
-        <PrimaryButton
-          label="Enter marketplace"
-          icon="arrow-forward"
-          loading={busy}
-          onPress={() =>
-            onComplete({
-              legalName,
-              city,
-              community,
-              wishlist: wishlistText
-                .split(',')
-                .map((item) => item.trim())
-                .filter(Boolean),
-            })
-          }
-        />
-      </ScrollView>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.flexOne}
+      >
+        <ScrollView
+          contentContainerStyle={styles.onboarding}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={styles.brand}>BookTrader</Text>
+          <Text style={styles.sectionTitle}>Finish your profile</Text>
+          <Text style={styles.mutedText}>{email}</Text>
+          <Field
+            label="Legal name"
+            value={legalName}
+            onChangeText={setLegalName}
+            autoCapitalize="words"
+          />
+          <Field label="City" value={city} onChangeText={setCity} autoCapitalize="words" />
+          <Field
+            label="Community"
+            value={community}
+            onChangeText={setCommunity}
+            autoCapitalize="words"
+          />
+          <Field
+            label="Wishlist"
+            value={wishlistText}
+            onChangeText={setWishlistText}
+            placeholder="Atomic Habits, Ikigai, Harry Potter"
+            multiline
+          />
+          <PrimaryButton
+            label="Enter marketplace"
+            icon="arrow-forward"
+            loading={busy}
+            onPress={() =>
+              onComplete({
+                legalName,
+                city,
+                community,
+                wishlist: wishlistText
+                  .split(',')
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+              })
+            }
+          />
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -1926,6 +1978,12 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'space-between',
     padding: spacing.lg,
+  },
+  authScroll: {
+    flexGrow: 1,
+    justifyContent: 'space-between',
+    padding: spacing.lg,
+    paddingBottom: spacing.xl,
   },
   authHero: {
     paddingTop: spacing.xl,

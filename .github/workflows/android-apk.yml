@@ -75,3 +75,16 @@ jobs:
           name: booktrader-release-apk
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+
+      - name: Publish GitHub Release (main branch only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "BookTrader build ${{ github.run_number }}"
+          body: |
+            Automated release from commit ${{ github.sha }}.
+
+            Download `booktrader.apk` below and install it on your Android device.
+          files: android/app/build/outputs/apk/release/app-release.apk
+          fail_on_unmatched_files: true

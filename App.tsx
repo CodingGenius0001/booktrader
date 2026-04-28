@@ -281,10 +281,13 @@ export default function App() {
 
   const updateChecked = React.useRef(false);
 
+  // Android-type OAuth clients cannot be used in browser-based flows (expo-auth-session
+  // uses Chrome Custom Tabs). Use the web client ID on all platforms so the authorization
+  // code flow works. The redirect URI com.booktrader.booktrade:/oauthredirect must be
+  // registered in the web OAuth client in Google Cloud Console.
   const [, googleResponse, promptGoogle] = Google.useIdTokenAuthRequest({
     clientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
     iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
   });
 
   const currentProfile = demoMode ? demoProfile : profile;
@@ -777,13 +780,10 @@ export default function App() {
         busy={busy}
         onEmailAuth={handleEmailAuth}
         onGoogle={() => {
-          if (
-            Platform.OS === 'android' &&
-            !process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID
-          ) {
+          if (!process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID) {
             Alert.alert(
               'Google Sign-In not configured',
-              'Add EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID to your GitHub secrets and rebuild.',
+              'Add EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID to your GitHub secrets and rebuild.',
             );
             return;
           }

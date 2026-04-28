@@ -12,9 +12,12 @@ on:
 jobs:
   build-android-debug-apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       CI: 1
       EXPO_NO_TELEMETRY: 1
+      EXPO_PUBLIC_BUILD_NUMBER: ${{ github.run_number }}
       EXPO_PUBLIC_FIREBASE_API_KEY: ${{ secrets.EXPO_PUBLIC_FIREBASE_API_KEY }}
       EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN }}
       EXPO_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.EXPO_PUBLIC_FIREBASE_PROJECT_ID }}
@@ -65,15 +68,21 @@ jobs:
         run: |
           node -e "const fs=require('fs'); const p='android/build.gradle'; let s=fs.readFileSync(p,'utf8'); const needle=\"    mavenCentral()\\n    maven { url 'https://www.jitpack.io' }\"; const insert=\"    mavenCentral()\\n    maven { url 'https://www.jitpack.io' }\\n    maven { url uri(project(':react-native-async-storage_async-storage').file('local_repo')) }\"; if (!s.includes(\"react-native-async-storage_async-storage\")) { fs.writeFileSync(p, s.replace(needle, insert)); }"
 
+      - name: Set Android versionCode to build number
+        run: sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/" android/app/build.gradle
+
       - name: Build release APK
         working-directory: android
         run: ./gradlew assembleRelease --no-daemon
+
+      - name: Rename APK for stable download URL
+        run: cp android/app/build/outputs/apk/release/app-release.apk booktrader.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: booktrader-release-apk
-          path: android/app/build/outputs/apk/release/app-release.apk
+          path: booktrader.apk
           if-no-files-found: error
 
       - name: Publish GitHub Release (main branch only)
@@ -83,8 +92,17 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: "BookTrader build ${{ github.run_number }}"
           body: |
-            Automated release from commit ${{ github.sha }}.
+            Build **${{ github.run_number }}** — commit `${{ github.sha }}`.
 
-            Download `booktrader.apk` below and install it on your Android device.
-          files: android/app/build/outputs/apk/release/app-release.apk
+            ### Install
+            1. Download `booktrader.apk` below.
+            2. Open the file on your Android device.
+            3. Enable *Install from unknown sources* in Settings if prompted.
+
+            ### Stable download link (always points to the latest build)
+            ```
+            https://github.com/CodingGenius0001/booktrader/releases/latest/download/booktrader.apk
+            ```
+          files: booktrader.apk
           fail_on_unmatched_files: true
+          make_latest: "true"

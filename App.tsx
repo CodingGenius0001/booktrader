@@ -10,6 +10,7 @@ import {
   Alert,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -75,6 +76,9 @@ type AuthMode = 'login' | 'register';
 const LISTING_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_COMMUNITY = 'Prestige Shantiniketan, Whitefield';
 const DEFAULT_CITY = 'Bengaluru';
+const CURRENT_BUILD = parseInt(process.env.EXPO_PUBLIC_BUILD_NUMBER ?? '0', 10);
+const GITHUB_REPO = 'CodingGenius0001/booktrader';
+const APK_DOWNLOAD_URL = `https://github.com/${GITHUB_REPO}/releases/latest/download/booktrader.apk`;
 
 const emptyDraft: BookDraft = {
   title: '',
@@ -274,6 +278,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('market');
   const [busy, setBusy] = useState(false);
 
+  const updateChecked = React.useRef(false);
+
   const [, googleResponse, promptGoogle] = Google.useIdTokenAuthRequest({
     clientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
     iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
@@ -390,6 +396,32 @@ export default function App() {
       registerPushToken(currentUserId).catch(() => undefined);
     }
   }, [currentUserId, demoMode]);
+
+  useEffect(() => {
+    if (!currentProfile || updateChecked.current || Platform.OS !== 'android' || CURRENT_BUILD === 0) {
+      return;
+    }
+    updateChecked.current = true;
+    fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+      headers: { Accept: 'application/vnd.github+json' },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { tag_name?: string } | null) => {
+        if (!data?.tag_name) return;
+        const latestBuild = parseInt(data.tag_name.replace('build-', ''), 10);
+        if (!isNaN(latestBuild) && latestBuild > CURRENT_BUILD) {
+          Alert.alert(
+            'Update available',
+            `Build ${latestBuild} is ready (you have build ${CURRENT_BUILD}). Download the latest APK to get new features.`,
+            [
+              { text: 'Later', style: 'cancel' },
+              { text: 'Download update', onPress: () => Linking.openURL(APK_DOWNLOAD_URL) },
+            ],
+          );
+        }
+      })
+      .catch(() => undefined);
+  }, [currentProfile]);
 
   async function handleEmailAuth(input: {
     mode: AuthMode;
@@ -1451,6 +1483,9 @@ function ProfileScreen({
         />
       ))}
       <SecondaryButton label="Sign out" icon="log-out-outline" onPress={onSignOut} />
+      {CURRENT_BUILD > 0 && (
+        <Text style={styles.buildLabel}>Build {CURRENT_BUILD}</Text>
+      )}
     </ScrollView>
   );
 }
@@ -2493,6 +2528,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.xs,
     marginTop: spacing.xs,
+  },
+  buildLabel: {
+    color: colors.border,
+    fontSize: 11,
+    marginTop: spacing.lg,
+    textAlign: 'center',
   },
   tabBar: {
     alignItems: 'center',

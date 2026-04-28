@@ -987,6 +987,11 @@ function MarketScreen({
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<BookListing | null>(null);
 
+  const myListings = useMemo(
+    () => listings.filter((l) => l.ownerId === currentProfile.id && l.status === 'open'),
+    [listings, currentProfile.id],
+  );
+
   const activeListings = useMemo(() => {
     const queryText = search.trim().toLowerCase();
     return listings
@@ -1064,6 +1069,7 @@ function MarketScreen({
               listing={listing}
               personalStatus={personalListingStatus(listing, offers, currentProfile.id)}
               distance={formatDistance(kmBetween(currentProfile.coordinates, listing.ownerCoordinates))}
+              highlight={wantsYourBook(listing, myListings)}
               onPress={() => setSelected(listing)}
             />
           ))
@@ -1072,6 +1078,7 @@ function MarketScreen({
 
       <TradeRequestModal
         listing={selected}
+        myListings={myListings}
         onClose={() => setSelected(null)}
         onSubmit={(listing, offeredBooks, note) => {
           setSelected(null);
@@ -1100,6 +1107,15 @@ function personalListingStatus(
   }
 
   return listing.status;
+}
+
+function wantsYourBook(listing: BookListing, myListings: BookListing[]): boolean {
+  const wants = listing.wants?.toLowerCase() ?? '';
+  if (!wants || myListings.length === 0) return false;
+  return myListings.some((l) => {
+    const keywords = l.title.toLowerCase().split(/\s+/).filter((w) => w.length > 4);
+    return keywords.some((word) => wants.includes(word));
+  });
 }
 
 function AddListingScreen({
@@ -1391,11 +1407,13 @@ function ListingCard({
   listing,
   personalStatus,
   distance,
+  highlight,
   onPress,
 }: {
   listing: BookListing;
   personalStatus: string;
   distance: string;
+  highlight?: boolean;
   onPress?: () => void;
 }) {
   return (
@@ -1423,6 +1441,12 @@ function ListingCard({
         <Text style={styles.tradeNote} numberOfLines={2}>
           Wants: {listing.wants || 'Open to offers'}
         </Text>
+        {highlight && (
+          <View style={styles.mutualMatchBadge}>
+            <Ionicons name="swap-horizontal-outline" size={12} color={colors.teal} />
+            <Text style={styles.mutualMatchText}>They want your book</Text>
+          </View>
+        )}
       </View>
     </Pressable>
   );
@@ -1464,22 +1488,36 @@ function BookCover({ uri, size }: { uri?: string | null; size: 'large' | 'compac
 
 function TradeRequestModal({
   listing,
+  myListings,
   onClose,
   onSubmit,
 }: {
   listing: BookListing | null;
+  myListings: BookListing[];
   onClose: () => void;
   onSubmit: (listing: BookListing, offeredBooks: string, note: string) => void;
 }) {
-  const [offeredBooks, setOfferedBooks] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [note, setNote] = useState('');
 
   useEffect(() => {
     if (listing) {
-      setOfferedBooks('');
+      setSelectedId(null);
       setNote('');
     }
   }, [listing]);
+
+  const selectedBook = myListings.find((l) => l.id === selectedId);
+
+  function handleSubmit() {
+    if (!listing) return;
+    if (myListings.length > 0 && !selectedBook) {
+      Alert.alert('Pick a book', 'Select one of your listed books to offer in this trade.');
+      return;
+    }
+    const offeredBooks = selectedBook ? `${selectedBook.title} by ${selectedBook.author}` : '';
+    onSubmit(listing, offeredBooks, note);
+  }
 
   return (
     <Modal transparent visible={Boolean(listing)} animationType="slide" onRequestClose={onClose}>
@@ -1488,19 +1526,43 @@ function TradeRequestModal({
           {listing && (
             <>
               <View style={styles.modalHeader}>
-                <View>
-                  <Text style={styles.sectionTitle}>{listing.title}</Text>
+                <View style={styles.flexOne}>
+                  <Text style={styles.sectionTitle} numberOfLines={1}>{listing.title}</Text>
                   <Text style={styles.mutedText}>Trade with {listing.ownerName}</Text>
                 </View>
                 <IconButton icon="close" onPress={onClose} />
               </View>
-              <Field
-                label="Your offer"
-                value={offeredBooks}
-                onChangeText={setOfferedBooks}
-                placeholder="One book, multiple books, or terms"
-                multiline
-              />
+              <Text style={styles.label}>Pick a book to offer</Text>
+              {myListings.length === 0 ? (
+                <View style={styles.emptyOfferHint}>
+                  <Ionicons name="book-outline" size={24} color={colors.muted} />
+                  <Text style={styles.mutedText}>
+                    List a book first — you need something to offer in a trade.
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.offerPicker}
+                >
+                  {myListings.map((book) => {
+                    const selected = book.id === selectedId;
+                    return (
+                      <Pressable
+                        key={book.id}
+                        onPress={() => setSelectedId(book.id)}
+                        style={[styles.offerBookCard, selected && styles.offerBookCardSelected]}
+                      >
+                        <BookCover uri={book.coverImageUrl ?? book.frontImageUrl} size="compact" />
+                        <Text style={styles.offerBookTitle} numberOfLines={2}>
+                          {book.title}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              )}
               <Field
                 label="Meetup note"
                 value={note}
@@ -1511,7 +1573,7 @@ function TradeRequestModal({
               <PrimaryButton
                 label="Request trade"
                 icon="swap-horizontal-outline"
-                onPress={() => onSubmit(listing, offeredBooks, note)}
+                onPress={handleSubmit}
               />
             </>
           )}
@@ -2296,6 +2358,55 @@ const styles = StyleSheet.create({
   },
   starButton: {
     padding: spacing.xs,
+  },
+  mutualMatchBadge: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: '#DDEDEA',
+    borderRadius: 999,
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+  },
+  mutualMatchText: {
+    color: colors.teal,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  offerPicker: {
+    marginBottom: spacing.md,
+  },
+  offerBookCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    marginRight: spacing.sm,
+    padding: spacing.sm,
+    width: 120,
+  },
+  offerBookCardSelected: {
+    backgroundColor: '#DDEDEA',
+    borderColor: colors.teal,
+    borderWidth: 2,
+  },
+  offerBookTitle: {
+    color: colors.ink,
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: spacing.xs,
+    minHeight: 34,
+  },
+  emptyOfferHint: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radii.md,
+    gap: spacing.sm,
+    justifyContent: 'center',
+    marginBottom: spacing.md,
+    padding: spacing.lg,
   },
   profileSummary: {
     alignItems: 'center',

@@ -57,17 +57,21 @@ jobs:
       - name: Generate Android project
         run: npx expo prebuild --platform android --clean --no-install
 
+      - name: Use consistent debug keystore
+        if: env.ANDROID_DEBUG_KEYSTORE_BASE64 != ''
+        run: cp "$HOME/.android/debug.keystore" android/app/debug.keystore
+
       - name: Add async-storage local repository
         run: |
           node -e "const fs=require('fs'); const p='android/build.gradle'; let s=fs.readFileSync(p,'utf8'); const needle=\"    mavenCentral()\\n    maven { url 'https://www.jitpack.io' }\"; const insert=\"    mavenCentral()\\n    maven { url 'https://www.jitpack.io' }\\n    maven { url uri(project(':react-native-async-storage_async-storage').file('local_repo')) }\"; if (!s.includes(\"react-native-async-storage_async-storage\")) { fs.writeFileSync(p, s.replace(needle, insert)); }"
 
-      - name: Build debug APK
+      - name: Build release APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: booktrader-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: booktrader-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error

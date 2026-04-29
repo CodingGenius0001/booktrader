@@ -1,10 +1,9 @@
 import { FirebaseApp, getApp, getApps, initializeApp } from 'firebase/app';
 import { Auth, getAuth, initializeAuth } from 'firebase/auth';
-// getReactNativePersistence lives in the React Native bundle — import it from
-// the internal RN path since the default firebase/auth types don't expose it.
 import type { Persistence } from 'firebase/auth';
-// getReactNativePersistence lives in the React Native bundle — the default
-// firebase/auth TypeScript types don't expose it, so we pull it at runtime.
+// Metro resolves @firebase/auth to dist/rn/index.js (via the package's react-native field)
+// which exports getReactNativePersistence. The default TypeScript types only expose the
+// browser surface, so we use require() with an explicit cast to keep tsc clean.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { getReactNativePersistence } = require('@firebase/auth') as {
   getReactNativePersistence: (storage: unknown) => Persistence;

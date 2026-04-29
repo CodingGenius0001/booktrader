@@ -9,6 +9,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
+  AppStateStatus,
   Image,
   KeyboardAvoidingView,
   Linking,
@@ -23,6 +25,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   GoogleAuthProvider,
   User,
@@ -85,6 +88,8 @@ const DEFAULT_COMMUNITY = 'Prestige Shantiniketan, Whitefield';
 const DEFAULT_CITY = 'Bengaluru';
 const CURRENT_BUILD = parseInt(process.env.EXPO_PUBLIC_BUILD_NUMBER ?? '0', 10);
 const GITHUB_REPO = 'CodingGenius0001/booktrader';
+const LAST_OFFERS_KEY = '@bt_last_offers';
+type OfferSnap = { id: string; status: string; msgCount: number };
 
 const emptyDraft: BookDraft = {
   title: '',
@@ -289,6 +294,9 @@ export default function App() {
 
   const updateChecked = useRef(false);
   const prevOffersRef = useRef<TradeOffer[]>([]);
+  const savedOffersRef = useRef<OfferSnap[] | null>(null);
+  const savedOffersLoaded = useRef(false);
+  const lastUpdateCheckRef = useRef(0);
 
 
   const currentProfile = demoMode ? demoProfile : profile;
@@ -360,33 +368,58 @@ export default function App() {
       });
       merged.sort((a, b) => b.updatedAt - a.updatedAt);
 
-      // Fire local notifications for status / message changes
+      // Fire local notifications for status / message changes.
+      // On first load (prev is empty), fall back to the AsyncStorage snapshot saved
+      // on the previous session so we catch changes that happened while the app was closed.
       const prev = prevOffersRef.current;
-      if (prev.length > 0) {
+      const isFirstLoad = prev.length === 0 && savedOffersLoaded.current && savedOffersRef.current !== null;
+      if (prev.length > 0 || isFirstLoad) {
         merged.forEach((next) => {
-          const old = prev.find((o) => o.id === next.id);
-          if (!old) {
-            if (next.listingOwnerId === currentUserId) {
-              fireLocalNotification(
-                'New trade request',
-                `${next.requesterName} wants to trade for "${next.listingTitle}"`,
-              );
+          if (isFirstLoad) {
+            // Compare against the lightweight AsyncStorage snapshot (status + message count only)
+            const snap = savedOffersRef.current!.find((s) => s.id === next.id);
+            if (!snap) {
+              if (next.listingOwnerId === currentUserId) {
+                fireLocalNotification('New trade request', `${next.requesterName} wants to trade for "${next.listingTitle}"`);
+              }
+            } else if (snap.status !== next.status) {
+              if (next.status === 'accepted' && next.requesterId === currentUserId) {
+                fireLocalNotification('Trade accepted!', `${next.listingOwnerName} accepted your offer for "${next.listingTitle}"`);
+              } else if (next.status === 'declined' && next.requesterId === currentUserId) {
+                fireLocalNotification('Trade declined', `Your offer for "${next.listingTitle}" was declined.`);
+              } else if (next.status === 'completed') {
+                fireLocalNotification('Trade complete!', `"${next.listingTitle}" — tap to leave a rating.`);
+              }
+            } else if ((next.messages?.length ?? 0) > snap.msgCount) {
+              const last = next.messages[next.messages.length - 1];
+              if (last && last.senderId !== currentUserId) {
+                fireLocalNotification(`${last.senderName}`, last.text);
+              }
             }
-          } else if (old.status !== next.status) {
-            if (next.status === 'accepted' && next.requesterId === currentUserId) {
-              fireLocalNotification('Trade accepted!', `${next.listingOwnerName} accepted your offer for "${next.listingTitle}"`);
-            } else if (next.status === 'declined' && next.requesterId === currentUserId) {
-              fireLocalNotification('Trade declined', `Your offer for "${next.listingTitle}" was declined.`);
-            } else if (next.status === 'completed') {
-              fireLocalNotification('Trade complete!', `"${next.listingTitle}" — tap to leave a rating.`);
-            }
-          } else if ((next.messages?.length ?? 0) > (old.messages?.length ?? 0)) {
-            const last = next.messages[next.messages.length - 1];
-            if (last && last.senderId !== currentUserId) {
-              fireLocalNotification(`${last.senderName}`, last.text);
+          } else {
+            const old = prev.find((o) => o.id === next.id);
+            if (!old) {
+              if (next.listingOwnerId === currentUserId) {
+                fireLocalNotification('New trade request', `${next.requesterName} wants to trade for "${next.listingTitle}"`);
+              }
+            } else if (old.status !== next.status) {
+              if (next.status === 'accepted' && next.requesterId === currentUserId) {
+                fireLocalNotification('Trade accepted!', `${next.listingOwnerName} accepted your offer for "${next.listingTitle}"`);
+              } else if (next.status === 'declined' && next.requesterId === currentUserId) {
+                fireLocalNotification('Trade declined', `Your offer for "${next.listingTitle}" was declined.`);
+              } else if (next.status === 'completed') {
+                fireLocalNotification('Trade complete!', `"${next.listingTitle}" — tap to leave a rating.`);
+              }
+            } else if ((next.messages?.length ?? 0) > (old.messages?.length ?? 0)) {
+              const last = next.messages[next.messages.length - 1];
+              if (last && last.senderId !== currentUserId) {
+                fireLocalNotification(`${last.senderName}`, last.text);
+              }
             }
           }
         });
+        // After first-load comparison, clear saved snapshot so it doesn't re-fire
+        if (isFirstLoad) savedOffersRef.current = null;
       }
       prevOffersRef.current = merged;
       setOffers(merged);
@@ -435,9 +468,50 @@ export default function App() {
       return;
     }
     updateChecked.current = true;
+    lastUpdateCheckRef.current = Date.now();
     checkForUpdates();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProfile?.id]);
+
+  // Load last-seen offer snapshot from AsyncStorage so we can detect changes
+  // that happened while the app was closed (and fire notifications on next open).
+  useEffect(() => {
+    AsyncStorage.getItem(LAST_OFFERS_KEY)
+      .then((raw) => {
+        if (raw) savedOffersRef.current = JSON.parse(raw) as OfferSnap[];
+      })
+      .catch(() => undefined)
+      .finally(() => { savedOffersLoaded.current = true; });
+  }, []);
+
+  // AppState listener: save offer snapshot on background; re-check updates on foreground.
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        // Re-check for updates at most once per 10 minutes when foregrounding.
+        if (Platform.OS === 'android' && CURRENT_BUILD > 0) {
+          const elapsed = Date.now() - lastUpdateCheckRef.current;
+          if (elapsed > 10 * 60 * 1000) {
+            lastUpdateCheckRef.current = Date.now();
+            checkForUpdates();
+          }
+        }
+      } else if (nextState === 'background' || nextState === 'inactive') {
+        // Persist current offers so we can detect changes on next open.
+        const snap: OfferSnap[] = prevOffersRef.current.map((o) => ({
+          id: o.id,
+          status: o.status,
+          msgCount: o.messages?.length ?? 0,
+        }));
+        if (snap.length > 0) {
+          AsyncStorage.setItem(LAST_OFFERS_KEY, JSON.stringify(snap)).catch(() => undefined);
+        }
+      }
+    };
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleEmailAuth(input: {
     mode: AuthMode;
@@ -1874,26 +1948,26 @@ function ProfileScreen({
               <View style={[styles.updateProgressFill, { width: `${Math.round(downloadProgress * 100)}%` as unknown as number }]} />
             </View>
           </View>
-        ) : pendingUpdate ? (
-          <View style={{ gap: spacing.sm }}>
-            <Text style={styles.mutedText}>Build {pendingUpdate.build} is available</Text>
-            <PrimaryButton label="Install update now" icon="download-outline" onPress={onInstallUpdate} />
-          </View>
-        ) : upToDate ? (
-          <View style={{ gap: spacing.sm }}>
-            <View style={styles.upToDateRow}>
-              <Ionicons name="checkmark-circle" size={16} color={colors.success} />
-              <Text style={[styles.mutedText, { color: colors.success }]}>You're on the latest version</Text>
-            </View>
-            <SecondaryButton label="Check again" icon="refresh-outline" onPress={onCheckUpdate} />
-          </View>
         ) : (
-          <SecondaryButton
-            label={updateChecking ? 'Checking…' : 'Check for updates'}
-            icon={updateChecking ? 'sync-outline' : 'refresh-outline'}
-            loading={updateChecking}
-            onPress={onCheckUpdate}
-          />
+          <View style={{ gap: spacing.sm }}>
+            {pendingUpdate ? (
+              <View style={{ gap: spacing.sm }}>
+                <Text style={styles.mutedText}>Build {pendingUpdate.build} is available</Text>
+                <PrimaryButton label="Install update now" icon="download-outline" onPress={onInstallUpdate} />
+              </View>
+            ) : upToDate ? (
+              <View style={styles.upToDateRow}>
+                <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                <Text style={[styles.mutedText, { color: colors.success }]}>You're on the latest version</Text>
+              </View>
+            ) : null}
+            <SecondaryButton
+              label={updateChecking ? 'Checking…' : (upToDate || pendingUpdate ? 'Check again' : 'Check for updates')}
+              icon={updateChecking ? 'sync-outline' : 'refresh-outline'}
+              loading={updateChecking}
+              onPress={onCheckUpdate}
+            />
+          </View>
         )}
       </View>
 

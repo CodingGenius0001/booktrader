@@ -561,16 +561,14 @@ export default function App() {
           input.password,
         );
 
-        // Send verification email IMMEDIATELY — before requestCoordinates()
-        // which can block for 30-60 s waiting for a GPS fix on Android.
-        // No actionCodeSettings: the continueUrl must be in Firebase's authorized
-        // domains list or the send is silently dropped. Default template works fine.
+        // Send verification email immediately (before the slow GPS call).
         try {
           await sendEmailVerification(created.user);
         } catch (verifyErr) {
+          const code = verifyErr instanceof Error ? (verifyErr as {code?: string}).code : undefined;
           Alert.alert(
-            'Account created but verification email failed',
-            verifyErr instanceof Error ? verifyErr.message : 'Use the resend button on the next screen.',
+            'Verification email failed',
+            `${verifyErr instanceof Error ? verifyErr.message : 'Unknown error'}${code ? `\n\nCode: ${code}` : ''}\n\nYou can resend from the next screen.`,
           );
         }
 
@@ -915,44 +913,54 @@ export default function App() {
 
     const db = firebase.db;
 
+    function fmtError(e: unknown) {
+      if (e instanceof Error) {
+        // Show Firebase error code (e.g. permission-denied) so it's debuggable
+        const code = (e as { code?: string }).code;
+        return code ? `${e.message} (${code})` : e.message;
+      }
+      return 'Could not update the trade. Try again.';
+    }
+
     try {
       if (status === 'accepted') {
-        const batch = writeBatch(db);
-        batch.update(doc(db, 'tradeOffers', offer.id), { status: 'accepted', updatedAt });
-        batch.update(doc(db, 'listings', offer.listingId), {
+        // Step 1 (critical): accept this specific offer
+        await updateDoc(doc(db, 'tradeOffers', offer.id), { status: 'accepted', updatedAt });
+
+        // Step 2: mark listing as claimed (non-critical — don't let failure roll back step 1)
+        updateDoc(doc(db, 'listings', offer.listingId), {
           status: 'claimed',
           claimedBy: offer.requesterId,
-        });
+        }).catch(() => undefined);
 
-        // Must include listingOwnerId filter so Firestore security rules can verify access.
-        const otherOffers = await getDocs(
+        // Step 3: decline all competing offers on the same listing (non-critical)
+        getDocs(
           query(
             collection(db, 'tradeOffers'),
             where('listingId', '==', offer.listingId),
             where('listingOwnerId', '==', offer.listingOwnerId),
           ),
-        );
+        ).then((snap) => {
+          if (snap.empty) return;
+          const batch = writeBatch(db);
+          snap.docs.forEach((item) => {
+            if (item.id !== offer.id) {
+              batch.update(doc(db, 'tradeOffers', item.id), { status: 'declined', updatedAt });
+            }
+          });
+          return batch.commit();
+        }).catch(() => undefined);
 
-        otherOffers.docs.forEach((item) => {
-          if (item.id !== offer.id) {
-            batch.update(doc(db, 'tradeOffers', item.id), { status: 'declined', updatedAt });
-          }
-        });
-
-        await batch.commit();
         return;
       }
 
       await updateDoc(doc(db, 'tradeOffers', offer.id), { status, updatedAt });
 
       if (status === 'completed') {
-        await updateDoc(doc(db, 'listings', offer.listingId), { status: 'completed' });
+        updateDoc(doc(db, 'listings', offer.listingId), { status: 'completed' }).catch(() => undefined);
       }
     } catch (error) {
-      Alert.alert(
-        'Action failed',
-        error instanceof Error ? error.message : 'Could not update the trade. Try again.',
-      );
+      Alert.alert('Action failed', fmtError(error));
     }
   }
 
@@ -1069,9 +1077,10 @@ export default function App() {
               `Sent to ${firebaseUser.email}.\n\nCheck spam and search for "noreply@" — Firebase sends from noreply@<project-id>.firebaseapp.com`,
             );
           } catch (e) {
+            const code = e instanceof Error ? (e as {code?: string}).code : undefined;
             Alert.alert(
               'Could not send email',
-              e instanceof Error ? e.message : 'Try again later.',
+              `${e instanceof Error ? e.message : 'Try again later.'}${code ? `\n\nCode: ${code}` : ''}`,
             );
           }
         }}
@@ -2274,6 +2283,7 @@ function TradeCard({
 }) {
   const [message, setMessage] = useState('');
   const [review, setReview] = useState('');
+  const [busy, setBusy] = useState(false);
   const chatRef = useRef<ScrollView>(null);
   const isOwner = offer.listingOwnerId === currentProfile.id;
   const isAccepted = offer.status === 'accepted';
@@ -2285,24 +2295,29 @@ function TradeCard({
     }
   }, [offer.messages.length, isAccepted]);
 
+  async function wrap(fn: () => void | Promise<void>) {
+    setBusy(true);
+    try { await fn(); } finally { setBusy(false); }
+  }
+
   function confirmAccept() {
-    Alert.alert('Accept trade?', `Offer: ${offer.offeredBooks}`, [
+    Alert.alert('Accept trade?', `Offering: ${offer.offeredBooks}`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Accept', onPress: onAccept },
+      { text: 'Accept', onPress: () => wrap(onAccept) },
     ]);
   }
 
   function confirmDecline() {
     Alert.alert('Decline trade?', 'This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Decline', style: 'destructive', onPress: onDecline },
+      { text: 'Decline', style: 'destructive', onPress: () => wrap(onDecline) },
     ]);
   }
 
   function confirmComplete() {
     Alert.alert('Mark as completed?', 'Confirm you both exchanged the books.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Complete', onPress: onComplete },
+      { text: 'Complete', onPress: () => wrap(onComplete) },
     ]);
   }
 
@@ -2322,8 +2337,8 @@ function TradeCard({
 
       {isOwner && offer.status === 'pending' && (
         <View style={styles.actionRow}>
-          <PrimaryButton label="Accept" icon="checkmark" compact onPress={confirmAccept} />
-          <SecondaryButton label="Decline" icon="close" compact onPress={confirmDecline} />
+          <PrimaryButton label={busy ? 'Accepting…' : 'Accept'} icon="checkmark" compact loading={busy} onPress={confirmAccept} />
+          <SecondaryButton label="Decline" icon="close" compact loading={busy} onPress={confirmDecline} />
         </View>
       )}
 

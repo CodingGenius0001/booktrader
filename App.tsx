@@ -284,6 +284,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState<{ build: number; apkUrl: string } | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [upToDate, setUpToDate] = useState(false);
 
   const updateChecked = useRef(false);
   const prevOffersRef = useRef<TradeOffer[]>([]);
@@ -427,27 +429,15 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProfile?.id]);
 
+  // Auto-check once per session on startup
   useEffect(() => {
     if (!currentProfile || updateChecked.current || Platform.OS !== 'android' || CURRENT_BUILD === 0) {
       return;
     }
     updateChecked.current = true;
-    fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-      headers: { Accept: 'application/vnd.github+json' },
-    })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { tag_name?: string } | null) => {
-        if (!data?.tag_name) return;
-        const latestBuild = parseInt(data.tag_name.replace('build-', ''), 10);
-        if (!isNaN(latestBuild) && latestBuild > CURRENT_BUILD) {
-          // Use /releases/latest/download/ so the install always resolves to
-          // whichever build is newest at tap-time, skipping all intermediates.
-          const apkUrl = `https://github.com/${GITHUB_REPO}/releases/latest/download/booktrader.apk`;
-          setPendingUpdate({ build: latestBuild, apkUrl });
-        }
-      })
-      .catch(() => undefined);
-  }, [currentProfile]);
+    checkForUpdates();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProfile?.id]);
 
   async function handleEmailAuth(input: {
     mode: AuthMode;
@@ -560,6 +550,34 @@ export default function App() {
       Alert.alert('Google sign-in failed', error instanceof Error ? error.message : 'Try again.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function checkForUpdates() {
+    if (Platform.OS !== 'android' || CURRENT_BUILD === 0) return;
+    setUpdateChecking(true);
+    setUpToDate(false);
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+        { headers: { Accept: 'application/vnd.github+json' } },
+      );
+      if (!res.ok) return;
+      const data: { tag_name?: string } = await res.json();
+      if (!data.tag_name) return;
+      const latestBuild = parseInt(data.tag_name.replace('build-', ''), 10);
+      if (!isNaN(latestBuild) && latestBuild > CURRENT_BUILD) {
+        const apkUrl = `https://github.com/${GITHUB_REPO}/releases/latest/download/booktrader.apk`;
+        setPendingUpdate({ build: latestBuild, apkUrl });
+        setUpToDate(false);
+      } else {
+        setPendingUpdate(null);
+        setUpToDate(true);
+      }
+    } catch {
+      // network error — leave existing state
+    } finally {
+      setUpdateChecking(false);
     }
   }
 
@@ -1034,6 +1052,12 @@ export default function App() {
             onSave={handleProfileComplete}
             onEditListing={editListing}
             onDeleteListing={deleteListing}
+            updateChecking={updateChecking}
+            upToDate={upToDate}
+            pendingUpdate={pendingUpdate}
+            downloadProgress={downloadProgress}
+            onCheckUpdate={checkForUpdates}
+            onInstallUpdate={downloadAndInstall}
             onPhotoChange={async (photoUrl) => {
               const userId = firebaseUser?.uid ?? demoProfile.id;
               await saveProfile(userId, {
@@ -1050,14 +1074,6 @@ export default function App() {
           />
         )}
       </View>
-      {pendingUpdate && (
-        <UpdateBanner
-          build={pendingUpdate.build}
-          progress={downloadProgress}
-          onUpdate={downloadAndInstall}
-          onDismiss={() => setPendingUpdate(null)}
-        />
-      )}
       <TabBar activeTab={activeTab} onChange={setActiveTab} badge={pendingIncoming} />
     </SafeAreaView>
   );
@@ -1709,6 +1725,12 @@ function ProfileScreen({
   onDeleteListing,
   onPhotoChange,
   onSignOut,
+  updateChecking,
+  upToDate,
+  pendingUpdate,
+  downloadProgress,
+  onCheckUpdate,
+  onInstallUpdate,
 }: {
   profile: UserProfile;
   listings: BookListing[];
@@ -1717,6 +1739,12 @@ function ProfileScreen({
   onDeleteListing: (id: string) => void;
   onPhotoChange: (photoUrl: string) => Promise<void>;
   onSignOut: () => void;
+  updateChecking: boolean;
+  upToDate: boolean;
+  pendingUpdate: { build: number; apkUrl: string } | null;
+  downloadProgress: number | null;
+  onCheckUpdate: () => void;
+  onInstallUpdate: () => void;
 }) {
   const [legalName, setLegalName] = useState(profile.legalName);
   const [city, setCity] = useState(profile.city);
@@ -1818,6 +1846,43 @@ function ProfileScreen({
           )}
         </View>
       ))}
+      {/* ── Updates ── */}
+      <View style={styles.updatesCard}>
+        <View style={styles.updatesHeader}>
+          <Ionicons name="cloud-download-outline" size={18} color={colors.teal} />
+          <Text style={styles.updatesTitle}>Updates</Text>
+          {CURRENT_BUILD > 0 && (
+            <Text style={styles.updatesBuild}>Build {CURRENT_BUILD}</Text>
+          )}
+        </View>
+
+        {downloadProgress !== null ? (
+          <View style={{ gap: spacing.xs }}>
+            <Text style={styles.mutedText}>Downloading… {Math.round(downloadProgress * 100)}%</Text>
+            <View style={styles.updateProgressBar}>
+              <View style={[styles.updateProgressFill, { width: `${Math.round(downloadProgress * 100)}%` as unknown as number }]} />
+            </View>
+          </View>
+        ) : pendingUpdate ? (
+          <View style={{ gap: spacing.sm }}>
+            <Text style={styles.mutedText}>Build {pendingUpdate.build} is available</Text>
+            <PrimaryButton label="Install update now" icon="download-outline" onPress={onInstallUpdate} />
+          </View>
+        ) : upToDate ? (
+          <View style={styles.upToDateRow}>
+            <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+            <Text style={[styles.mutedText, { color: colors.success }]}>You're on the latest version</Text>
+          </View>
+        ) : (
+          <SecondaryButton
+            label={updateChecking ? 'Checking…' : 'Check for updates'}
+            icon={updateChecking ? 'sync-outline' : 'refresh-outline'}
+            loading={updateChecking}
+            onPress={onCheckUpdate}
+          />
+        )}
+      </View>
+
       <SecondaryButton label="Sign out" icon="log-out-outline" onPress={onSignOut} />
       {CURRENT_BUILD > 0 && <Text style={styles.buildLabel}>Build {CURRENT_BUILD}</Text>}
 
@@ -3027,6 +3092,35 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.xs,
     marginTop: spacing.xs,
+  },
+  updatesCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    gap: spacing.md,
+    marginBottom: spacing.md,
+    padding: spacing.md,
+  },
+  updatesHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  updatesTitle: {
+    color: colors.ink,
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  updatesBuild: {
+    color: colors.muted,
+    fontSize: 12,
+  },
+  upToDateRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
   },
   forgotLink: {
     alignItems: 'center',

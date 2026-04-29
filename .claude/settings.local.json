@@ -24,7 +24,10 @@
       "Bash(node -e \"const fs=require\\('expo-file-system'\\); console.log\\(Object.keys\\(fs\\).filter\\(k=>k.includes\\('ache'\\)||k.includes\\('Dir'\\)\\)\\)\")",
       "Bash(node -e \"const fs=require\\('./node_modules/expo-file-system'\\); console.log\\(Object.keys\\(fs\\).filter\\(k=>k.toLowerCase\\(\\).includes\\('dir'\\)||k.toLowerCase\\(\\).includes\\('cache'\\)\\)\\)\")",
       "Bash(node -e \"try{require\\('./node_modules/react-native-safe-area-context/package.json'\\); console.log\\('installed:', require\\('./node_modules/react-native-safe-area-context/package.json'\\).version\\)}catch\\(e\\){console.log\\('not found'\\)}\")",
-      "Bash(xargs grep *)"
+      "Bash(xargs grep *)",
+      "Bash(python3 -c \"import sys,json; [print\\(r['tag_name'], '-', r['name']\\) for r in json.load\\(sys.stdin\\)]\")",
+      "Bash(python3 -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\(r['tag_name'], r['name'], '\\\\ncommit:', r['target_commitish']\\)\")",
+      "Bash(node scripts/make-icon.js)"
     ]
   }
 }

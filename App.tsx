@@ -29,6 +29,8 @@ import {
   createUserWithEmailAndPassword,
   getAdditionalUserInfo,
   onAuthStateChanged,
+  sendEmailVerification,
+  sendPasswordResetEmail,
   signInWithCredential,
   signInWithEmailAndPassword,
   signOut,
@@ -468,9 +470,6 @@ export default function App() {
           input.email.trim(),
           input.password,
         );
-        // Send email verification so accounts can't be spoofed
-        const { sendEmailVerification } = await import('firebase/auth');
-        await sendEmailVerification(created.user).catch(() => undefined);
         const coordinates = await requestCoordinates();
         await saveProfile(created.user.uid, {
           legalName: input.legalName.trim(),
@@ -481,7 +480,21 @@ export default function App() {
           wishlist: [],
           photoUrl: created.user.photoURL,
         });
-        Alert.alert('Verify your email', `A verification link was sent to ${input.email.trim()}. You can continue using the app while you verify.`);
+        // Send verification email — must happen after saveProfile so Firebase Auth
+        // is fully initialised. Errors are surfaced rather than swallowed.
+        try {
+          await sendEmailVerification(created.user);
+        } catch (verifyErr) {
+          Alert.alert(
+            'Could not send verification email',
+            verifyErr instanceof Error ? verifyErr.message : 'Check your Firebase project settings.',
+          );
+          return;
+        }
+        Alert.alert(
+          'Check your inbox',
+          `A verification link was sent to ${input.email.trim()}.\n\nIf you don't see it within a minute, check your spam / junk folder.`,
+        );
       } else {
         await signInWithEmailAndPassword(firebase.auth, input.email.trim(), input.password);
       }
@@ -913,11 +926,18 @@ export default function App() {
       <EmailVerificationGate
         email={firebaseUser.email ?? ''}
         onResend={async () => {
-          const { sendEmailVerification } = await import('firebase/auth');
-          await sendEmailVerification(firebaseUser).catch((e: Error) =>
-            Alert.alert('Could not send email', e.message),
-          );
-          Alert.alert('Email sent', 'Check your inbox and spam folder.');
+          try {
+            await sendEmailVerification(firebaseUser);
+            Alert.alert(
+              'Email sent',
+              'Check your inbox — and your spam / junk folder if it doesn\'t appear within a minute.',
+            );
+          } catch (e) {
+            Alert.alert(
+              'Could not send email',
+              e instanceof Error ? e.message : 'Try again later.',
+            );
+          }
         }}
         onRefresh={async () => {
           await firebaseUser.reload();
@@ -1190,9 +1210,11 @@ function AuthScreen({
                     return;
                   }
                   if (!firebase.auth) return;
-                  const { sendPasswordResetEmail } = require('firebase/auth');
                   sendPasswordResetEmail(firebase.auth, email.trim())
-                    .then(() => Alert.alert('Reset email sent', `Check ${email.trim()} for a password reset link.`))
+                    .then(() => Alert.alert(
+                      'Reset email sent',
+                      `Check ${email.trim()} for a password reset link.\n\nIf it doesn't arrive, check your spam folder.`,
+                    ))
                     .catch((e: Error) => Alert.alert('Error', e.message));
                 }}
                 style={styles.forgotLink}

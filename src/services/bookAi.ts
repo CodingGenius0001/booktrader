@@ -24,7 +24,7 @@ export async function lookupBookFromGoogleBooks(query: string) {
   }
 
   const response = await fetch(
-    `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query.trim())}&maxResults=3&langRestrict=en`,
+    `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query.trim())}&maxResults=1&printType=books`,
   );
 
   if (!response.ok) {
@@ -32,21 +32,7 @@ export async function lookupBookFromGoogleBooks(query: string) {
   }
 
   const payload = await response.json();
-
-  type VolumeInfo = {
-    title?: string;
-    authors?: string[];
-    publishedDate?: string;
-    description?: string;
-    industryIdentifiers?: { identifier?: string }[];
-    imageLinks?: { thumbnail?: string; smallThumbnail?: string };
-  };
-  type Item = { volumeInfo: VolumeInfo };
-
-  // Prefer the result with the most complete data (has cover + description).
-  const items: Item[] = payload.items ?? [];
-  const best = items.find((i) => i.volumeInfo.imageLinks && i.volumeInfo.description) ?? items[0];
-  const item = best?.volumeInfo;
+  const item = payload.items?.[0]?.volumeInfo;
 
   if (!item) {
     return EMPTY_DRAFT;

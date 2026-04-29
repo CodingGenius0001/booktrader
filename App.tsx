@@ -1,5 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
+import {
+  PlayfairDisplay_700Bold,
+  PlayfairDisplay_400Regular_Italic,
+  useFonts,
+} from '@expo-google-fonts/playfair-display';
 import * as FileSystem from 'expo-file-system/legacy';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import * as IntentLauncher from 'expo-intent-launcher';
@@ -42,6 +47,7 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
   orderBy,
@@ -55,7 +61,7 @@ import {
 import { firebase, hasFirebaseConfig } from './src/config/firebase';
 import { demoListings, demoOffers, demoUser } from './src/data/demo';
 import { lookupBookFromGoogleBooks } from './src/services/bookAi';
-import { colors, radii, spacing } from './src/theme';
+import { colors, fonts, radii, spacing } from './src/theme';
 import {
   BookDraft,
   BookListing,
@@ -91,7 +97,7 @@ if (Platform.OS === 'android') {
   }).catch(() => undefined);
 }
 
-type TabKey = 'market' | 'add' | 'trades' | 'profile';
+type TabKey = 'market' | 'add' | 'listings' | 'trades' | 'profile';
 type AuthMode = 'login' | 'register';
 
 const LISTING_TTL_MS = 14 * 24 * 60 * 60 * 1000;
@@ -285,10 +291,12 @@ function mapOffer(id: string, value: Record<string, unknown>): TradeOffer {
     updatedAt: Number(value.updatedAt ?? now()),
     messages: (value.messages as TradeMessage[] | undefined) ?? [],
     ratedBy: (value.ratedBy as string[] | undefined) ?? [],
+    completedBy: (value.completedBy as string[] | undefined) ?? [],
   };
 }
 
 export default function App() {
+  const [fontsLoaded] = useFonts({ PlayfairDisplay_700Bold, PlayfairDisplay_400Regular_Italic });
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(hasFirebaseConfig);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -298,6 +306,7 @@ export default function App() {
   const [listings, setListings] = useState<BookListing[]>(hasFirebaseConfig ? [] : demoListings);
   const [offers, setOffers] = useState<TradeOffer[]>(hasFirebaseConfig ? [] : demoOffers);
   const [activeTab, setActiveTab] = useState<TabKey>('market');
+  const [focusedOfferId, setFocusedOfferId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState<{ build: number; apkUrl: string } | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
@@ -872,6 +881,7 @@ export default function App() {
       updatedAt: createdAt,
       messages: [],
       ratedBy: [],
+      completedBy: [],
     };
 
     if (demoMode || !firebase.db) {
@@ -895,18 +905,31 @@ export default function App() {
         ),
       );
 
-      if (status === 'accepted' || status === 'completed') {
-        setListings((current) =>
-          current.map((item) =>
-            item.id === offer.listingId
-              ? {
-                  ...item,
-                  status: status === 'accepted' ? 'claimed' : 'completed',
-                  claimedBy: offer.requesterId,
-                }
-              : item,
-          ),
-        );
+      if (status === 'accepted') {
+        setListings((cur) => cur.map((l) =>
+          l.id === offer.listingId ? { ...l, status: 'claimed', claimedBy: offer.requesterId } : l,
+        ));
+      }
+      if (status === 'declined') {
+        setListings((cur) => cur.map((l) =>
+          l.id === offer.listingId && l.claimedBy === offer.requesterId
+            ? { ...l, status: 'open', claimedBy: null }
+            : l,
+        ));
+      }
+      if (status === 'completed' && currentProfile) {
+        const newCompletedBy = [...new Set([...(offer.completedBy ?? []), currentProfile.id])];
+        const bothDone = newCompletedBy.includes(offer.listingOwnerId)
+                      && newCompletedBy.includes(offer.requesterId);
+        setOffers((cur) => cur.map((o) =>
+          o.id === offer.id ? { ...o, completedBy: newCompletedBy, ...(bothDone ? { status: 'completed' as const } : {}) } : o,
+        ));
+        if (bothDone) {
+          setListings((cur) => cur.map((l) =>
+            l.id === offer.listingId ? { ...l, status: 'completed' } : l,
+          ));
+        }
+        return;
       }
       return;
     }
@@ -954,11 +977,44 @@ export default function App() {
         return;
       }
 
-      await updateDoc(doc(db, 'tradeOffers', offer.id), { status, updatedAt });
+      if (status === 'declined') {
+        await updateDoc(doc(db, 'tradeOffers', offer.id), { status: 'declined', updatedAt });
+        // If this offer had claimed the listing, reset it to open
+        getDoc(doc(db, 'listings', offer.listingId)).then((snap) => {
+          const data = snap.data();
+          if (data?.claimedBy === offer.requesterId && data?.status === 'claimed') {
+            updateDoc(doc(db, 'listings', offer.listingId), { status: 'open', claimedBy: null })
+              .catch(() => undefined);
+          }
+        }).catch(() => undefined);
+        return;
+      }
 
       if (status === 'completed') {
-        updateDoc(doc(db, 'listings', offer.listingId), { status: 'completed' }).catch(() => undefined);
+        if (!currentProfile) return;
+        const alreadyConfirmed = (offer.completedBy ?? []).includes(currentProfile.id);
+        if (alreadyConfirmed) return;
+
+        const newCompletedBy = [...new Set([...(offer.completedBy ?? []), currentProfile.id])];
+        const bothDone = newCompletedBy.includes(offer.listingOwnerId)
+                      && newCompletedBy.includes(offer.requesterId);
+
+        if (bothDone) {
+          await updateDoc(doc(db, 'tradeOffers', offer.id), {
+            status: 'completed', completedBy: newCompletedBy, updatedAt,
+          });
+          updateDoc(doc(db, 'listings', offer.listingId), { status: 'completed' })
+            .catch(() => undefined);
+        } else {
+          // First confirmation only — record who confirmed, keep status 'accepted'
+          await updateDoc(doc(db, 'tradeOffers', offer.id), {
+            completedBy: newCompletedBy, updatedAt,
+          });
+        }
+        return;
       }
+
+      await updateDoc(doc(db, 'tradeOffers', offer.id), { status, updatedAt });
     } catch (error) {
       Alert.alert('Action failed', fmtError(error));
     }
@@ -1048,7 +1104,7 @@ export default function App() {
     }
   }
 
-  if (authLoading || profileLoading) {
+  if (!fontsLoaded || authLoading || profileLoading) {
     return <LoadingScreen />;
   }
 
@@ -1136,10 +1192,26 @@ export default function App() {
             onPublish={publishListing}
           />
         )}
+        {activeTab === 'listings' && (
+          <ListingsScreen
+            currentProfile={currentProfile}
+            listings={listings}
+            offers={offers}
+            onEditListing={editListing}
+            onDeleteListing={deleteListing}
+            onManage={(listing) => {
+              const linked = offers.find((o) => o.listingId === listing.id && o.status === 'accepted');
+              if (linked) setFocusedOfferId(linked.id);
+              setActiveTab('trades');
+            }}
+          />
+        )}
         {activeTab === 'trades' && (
           <TradesScreen
             currentProfile={currentProfile}
             offers={offers}
+            focusedOfferId={focusedOfferId}
+            onFocusCleared={() => setFocusedOfferId(null)}
             onAccept={(offer) => updateOfferStatus(offer, 'accepted')}
             onDecline={(offer) => updateOfferStatus(offer, 'declined')}
             onComplete={(offer) => updateOfferStatus(offer, 'completed')}
@@ -1150,10 +1222,7 @@ export default function App() {
         {activeTab === 'profile' && (
           <ProfileScreen
             profile={currentProfile}
-            listings={listings}
             onSave={handleProfileComplete}
-            onEditListing={editListing}
-            onDeleteListing={deleteListing}
             updateChecking={updateChecking}
             upToDate={upToDate}
             pendingUpdate={pendingUpdate}
@@ -1776,9 +1845,103 @@ function AddListingScreen({
   );
 }
 
+function ListingsScreen({
+  currentProfile,
+  listings,
+  offers,
+  onEditListing,
+  onDeleteListing,
+  onManage,
+}: {
+  currentProfile: UserProfile;
+  listings: BookListing[];
+  offers: TradeOffer[];
+  onEditListing: (id: string, patch: Partial<Pick<BookListing, 'title' | 'author' | 'edition' | 'description' | 'wants'>>) => void;
+  onDeleteListing: (id: string) => void;
+  onManage: (listing: BookListing) => void;
+}) {
+  const [editingListing, setEditingListing] = useState<BookListing | null>(null);
+  const ownListings = listings.filter((l) => l.ownerId === currentProfile.id);
+
+  const open = ownListings.filter((l) => l.status === 'open');
+  const claimed = ownListings.filter((l) => l.status === 'claimed');
+  const completed = ownListings.filter((l) => l.status === 'completed');
+
+  function Section({ title, items, count }: { title: string; items: BookListing[]; count: number }) {
+    if (items.length === 0) return null;
+    return (
+      <>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>{title}</Text>
+          <Text style={styles.mutedText}>{count}</Text>
+        </View>
+        {items.map((listing) => (
+          <View key={listing.id}>
+            <ListingCard
+              listing={listing}
+              personalStatus={listing.status}
+              distance={formatDaysLeft(listing.expiresAt)}
+            />
+            <View style={[styles.actionRow, { marginTop: -spacing.sm, marginBottom: spacing.md }]}>
+              {listing.status === 'open' && (
+                <>
+                  <SecondaryButton label="Edit" icon="create-outline" compact onPress={() => setEditingListing(listing)} />
+                  <SecondaryButton
+                    label="Delete"
+                    icon="trash-outline"
+                    compact
+                    onPress={() =>
+                      Alert.alert('Delete listing?', 'This cannot be undone.', [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Delete', style: 'destructive', onPress: () => onDeleteListing(listing.id) },
+                      ])
+                    }
+                  />
+                </>
+              )}
+              {listing.status === 'claimed' && (
+                <SecondaryButton
+                  label="Manage trade"
+                  icon="arrow-forward-outline"
+                  compact
+                  onPress={() => onManage(listing)}
+                />
+              )}
+            </View>
+          </View>
+        ))}
+      </>
+    );
+  }
+
+  return (
+    <ScrollView style={styles.screen} contentContainerStyle={styles.scrollContent}>
+      {ownListings.length === 0 ? (
+        <EmptyState icon="book-outline" title="No listings yet" subtitle="Tap the Add tab to list your first book." />
+      ) : (
+        <>
+          <Section title="Active" items={open} count={open.length} />
+          <Section title="In Trade" items={claimed} count={claimed.length} />
+          <Section title="Completed" items={completed} count={completed.length} />
+        </>
+      )}
+      <EditListingModal
+        listing={editingListing}
+        onClose={() => setEditingListing(null)}
+        onSave={(patch) => {
+          if (editingListing) onEditListing(editingListing.id, patch);
+          setEditingListing(null);
+        }}
+      />
+    </ScrollView>
+  );
+}
+
 function TradesScreen({
   currentProfile,
   offers,
+  focusedOfferId,
+  onFocusCleared,
   onAccept,
   onDecline,
   onComplete,
@@ -1787,6 +1950,8 @@ function TradesScreen({
 }: {
   currentProfile: UserProfile;
   offers: TradeOffer[];
+  focusedOfferId?: string | null;
+  onFocusCleared?: () => void;
   onAccept: (offer: TradeOffer) => void;
   onDecline: (offer: TradeOffer) => void;
   onComplete: (offer: TradeOffer) => void;
@@ -1794,6 +1959,19 @@ function TradesScreen({
   onRate: (offer: TradeOffer, rating: number, review: string) => void;
 }) {
   const [filter, setFilter] = useState<'all' | 'incoming' | 'outgoing'>('all');
+  const scrollRef = useRef<ScrollView>(null);
+
+  // When navigated from the Listings tab with a focused offer, switch filter to 'all'
+  // so the offer is visible, then clear the focus after a short delay.
+  useEffect(() => {
+    if (!focusedOfferId) return;
+    setFilter('all');
+    setTimeout(() => {
+      onFocusCleared?.();
+    }, 2000);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedOfferId]);
+
   const visibleOffers = offers.filter((offer) => {
     if (filter === 'incoming') {
       return offer.listingOwnerId === currentProfile.id;
@@ -1817,7 +1995,7 @@ function TradesScreen({
           { label: 'Outgoing', value: 'outgoing' },
         ]}
       />
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.scrollContent}>
         {visibleOffers.length === 0 ? (
           <EmptyState icon="swap-horizontal-outline" title="No trade activity yet" />
         ) : (
@@ -1826,6 +2004,7 @@ function TradesScreen({
               key={offer.id}
               offer={offer}
               currentProfile={currentProfile}
+              highlighted={offer.id === focusedOfferId}
               onAccept={() => onAccept(offer)}
               onDecline={() => onDecline(offer)}
               onComplete={() => onComplete(offer)}
@@ -1841,10 +2020,7 @@ function TradesScreen({
 
 function ProfileScreen({
   profile,
-  listings,
   onSave,
-  onEditListing,
-  onDeleteListing,
   onPhotoChange,
   onSignOut,
   updateChecking,
@@ -1855,10 +2031,7 @@ function ProfileScreen({
   onInstallUpdate,
 }: {
   profile: UserProfile;
-  listings: BookListing[];
   onSave: (values: { legalName: string; city: string; community: string; wishlist: string[] }) => void;
-  onEditListing: (id: string, patch: Partial<Pick<BookListing, 'title' | 'author' | 'edition' | 'description' | 'wants'>>) => void;
-  onDeleteListing: (id: string) => void;
   onPhotoChange: (photoUrl: string) => Promise<void>;
   onSignOut: () => void;
   updateChecking: boolean;
@@ -1872,9 +2045,7 @@ function ProfileScreen({
   const [city, setCity] = useState(profile.city);
   const [community, setCommunity] = useState(profile.community);
   const [wishlistText, setWishlistText] = useState(profile.wishlist.join(', '));
-  const [editingListing, setEditingListing] = useState<BookListing | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
-  const ownListings = listings.filter((listing) => listing.ownerId === profile.id);
 
   async function pickPhoto() {
     const ImagePicker = await import('expo-image-picker');
@@ -1934,40 +2105,6 @@ function ProfileScreen({
           })
         }
       />
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Your Listings</Text>
-        <Text style={styles.mutedText}>{ownListings.length}</Text>
-      </View>
-      {ownListings.map((listing) => (
-        <View key={listing.id}>
-          <ListingCard
-            listing={listing}
-            personalStatus={listing.status}
-            distance={formatDaysLeft(listing.expiresAt)}
-          />
-          {listing.status === 'open' && (
-            <View style={[styles.actionRow, { marginTop: -spacing.sm, marginBottom: spacing.md }]}>
-              <SecondaryButton
-                label="Edit"
-                icon="create-outline"
-                compact
-                onPress={() => setEditingListing(listing)}
-              />
-              <SecondaryButton
-                label="Delete"
-                icon="trash-outline"
-                compact
-                onPress={() =>
-                  Alert.alert('Delete listing?', 'This cannot be undone.', [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Delete', style: 'destructive', onPress: () => onDeleteListing(listing.id) },
-                  ])
-                }
-              />
-            </View>
-          )}
-        </View>
-      ))}
       {/* ── Updates ── */}
       <View style={styles.updatesCard}>
         <View style={styles.updatesHeader}>
@@ -2013,14 +2150,6 @@ function ProfileScreen({
         v0.1.0{CURRENT_BUILD > 0 ? ` · build ${CURRENT_BUILD}` : ''}
       </Text>
 
-      <EditListingModal
-        listing={editingListing}
-        onClose={() => setEditingListing(null)}
-        onSave={(patch) => {
-          if (editingListing) onEditListing(editingListing.id, patch);
-          setEditingListing(null);
-        }}
-      />
     </ScrollView>
   );
 }
@@ -2267,6 +2396,7 @@ function TradeRequestModal({
 function TradeCard({
   offer,
   currentProfile,
+  highlighted,
   onAccept,
   onDecline,
   onComplete,
@@ -2275,6 +2405,7 @@ function TradeCard({
 }: {
   offer: TradeOffer;
   currentProfile: UserProfile;
+  highlighted?: boolean;
   onAccept: () => void;
   onDecline: () => void;
   onComplete: () => void;
@@ -2288,6 +2419,11 @@ function TradeCard({
   const isOwner = offer.listingOwnerId === currentProfile.id;
   const isAccepted = offer.status === 'accepted';
   const isCompleted = offer.status === 'completed';
+  const myConfirmed = (offer.completedBy ?? []).includes(currentProfile.id);
+  const otherName = isOwner ? offer.requesterName : offer.listingOwnerName;
+  const otherConfirmed = isOwner
+    ? (offer.completedBy ?? []).includes(offer.requesterId)
+    : (offer.completedBy ?? []).includes(offer.listingOwnerId);
 
   useEffect(() => {
     if (isAccepted) {
@@ -2322,7 +2458,7 @@ function TradeCard({
   }
 
   return (
-    <View style={styles.tradeCard}>
+    <View style={[styles.tradeCard, highlighted && styles.tradeCardHighlighted]}>
       <View style={styles.listingTitleRow}>
         <View style={styles.flexOne}>
           <Text style={styles.cardTitle}>{offer.listingTitle}</Text>
@@ -2391,7 +2527,21 @@ function TradeCard({
               }}
             />
           </View>
-          <PrimaryButton label="Mark completed" icon="checkmark-done" onPress={confirmComplete} />
+          {!myConfirmed ? (
+            <PrimaryButton
+              label={busy ? 'Confirming…' : "I've returned the book"}
+              icon="checkmark-done-outline"
+              loading={busy}
+              onPress={confirmComplete}
+            />
+          ) : !otherConfirmed ? (
+            <View style={styles.waitingRow}>
+              <Ionicons name="time-outline" size={16} color={colors.warning} />
+              <Text style={[styles.mutedText, { color: colors.warning }]}>
+                Waiting for {otherName} to confirm return…
+              </Text>
+            </View>
+          ) : null}
         </>
       )}
 
@@ -2565,11 +2715,12 @@ function SegmentedControl({
   );
 }
 
-function EmptyState({ icon, title }: { icon: keyof typeof Ionicons.glyphMap; title: string }) {
+function EmptyState({ icon, title, subtitle }: { icon: keyof typeof Ionicons.glyphMap; title: string; subtitle?: string }) {
   return (
     <View style={styles.emptyState}>
       <Ionicons name={icon} size={30} color={colors.teal} />
       <Text style={styles.emptyTitle}>{title}</Text>
+      {subtitle ? <Text style={styles.mutedText}>{subtitle}</Text> : null}
     </View>
   );
 }
@@ -2624,7 +2775,8 @@ function TabBar({
 }) {
   const tabs: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
     { key: 'market', label: 'Market', icon: 'storefront-outline' },
-    { key: 'add', label: 'List', icon: 'add-circle-outline' },
+    { key: 'add', label: 'Add', icon: 'add-circle-outline' },
+    { key: 'listings', label: 'Listings', icon: 'book-outline' },
     { key: 'trades', label: 'Trades', icon: 'swap-horizontal-outline' },
     { key: 'profile', label: 'Profile', icon: 'person-outline' },
   ];
@@ -2681,13 +2833,13 @@ const styles = StyleSheet.create({
   },
   brand: {
     color: colors.ink,
-    fontSize: 24,
-    fontWeight: '800',
+    fontSize: 22,
+    fontFamily: fonts.serif,
   },
   brandLarge: {
     color: colors.ink,
-    fontSize: 42,
-    fontWeight: '900',
+    fontSize: 40,
+    fontFamily: fonts.serif,
   },
   headerSubtext: {
     color: colors.muted,
@@ -2721,9 +2873,9 @@ const styles = StyleSheet.create({
   },
   authHeadline: {
     color: colors.ink,
-    fontSize: 25,
-    fontWeight: '800',
-    lineHeight: 32,
+    fontSize: 24,
+    fontFamily: fonts.serif,
+    lineHeight: 34,
     marginTop: spacing.lg,
   },
   authSubtext: {
@@ -2777,8 +2929,8 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     color: colors.ink,
-    fontSize: 20,
-    fontWeight: '800',
+    fontSize: 18,
+    fontFamily: fonts.serif,
   },
   mutedText: {
     color: colors.muted,
@@ -2833,8 +2985,8 @@ const styles = StyleSheet.create({
   cardTitle: {
     color: colors.ink,
     flex: 1,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 15,
+    fontFamily: fonts.serif,
   },
   cardSubtitle: {
     color: colors.muted,
@@ -3098,6 +3250,16 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginBottom: spacing.md,
     padding: spacing.md,
+  },
+  tradeCardHighlighted: {
+    borderColor: colors.teal,
+    borderWidth: 2,
+  },
+  waitingRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    paddingVertical: spacing.xs,
   },
   flexOne: {
     flex: 1,

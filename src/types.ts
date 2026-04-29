@@ -70,4 +70,5 @@ export type TradeOffer = {
   updatedAt: number;
   messages: TradeMessage[];
   ratedBy: string[];
+  completedBy: string[];
 };

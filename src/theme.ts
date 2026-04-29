@@ -22,6 +22,11 @@ export const radii = {
   lg: 16,
 };
 
+export const fonts = {
+  serif: 'PlayfairDisplay_700Bold',
+  serifItalic: 'PlayfairDisplay_400Regular_Italic',
+};
+
 export const spacing = {
   xs: 6,
   sm: 10,

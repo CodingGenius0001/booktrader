@@ -28,7 +28,18 @@
       "Bash(python3 -c \"import sys,json; [print\\(r['tag_name'], '-', r['name']\\) for r in json.load\\(sys.stdin\\)]\")",
       "Bash(python3 -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\(r['tag_name'], r['name'], '\\\\ncommit:', r['target_commitish']\\)\")",
       "Bash(node scripts/make-icon.js)",
-      "Bash(node -e \"const a = require\\('C:\\\\\\\\Users\\\\\\\\Keshav Pillarisetti\\\\\\\\Desktop\\\\\\\\booktrader-dev\\\\\\\\node_modules\\\\\\\\firebase\\\\\\\\auth.js'\\); console.log\\(Object.keys\\(a\\).filter\\(k => k.toLowerCase\\(\\).includes\\('persist'\\) || k.toLowerCase\\(\\).includes\\('native'\\)\\)\\)\")"
+      "Bash(node -e \"const a = require\\('C:\\\\\\\\Users\\\\\\\\Keshav Pillarisetti\\\\\\\\Desktop\\\\\\\\booktrader-dev\\\\\\\\node_modules\\\\\\\\firebase\\\\\\\\auth.js'\\); console.log\\(Object.keys\\(a\\).filter\\(k => k.toLowerCase\\(\\).includes\\('persist'\\) || k.toLowerCase\\(\\).includes\\('native'\\)\\)\\)\")",
+      "Bash(npx tsc *)",
+      "Bash(node -e \"const a = require\\('@firebase/auth'\\); console.log\\(Object.keys\\(a\\).filter\\(k => k.includes\\('Persistence'\\) || k.includes\\('persistence'\\) || k.includes\\('Native'\\)\\)\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"const p = require\\('./node_modules/@firebase/auth/package.json'\\); console.log\\(JSON.stringify\\(p.exports && p.exports['.'], null, 2\\)\\)\")",
+      "Bash(node -e \"const p = require\\('./node_modules/firebase/auth/package.json'\\); console.log\\(JSON.stringify\\(p, null, 2\\)\\)\")",
+      "Bash(node -e \"const p = require\\('./node_modules/firebase/package.json'\\); const auth = p.exports && p.exports['./auth']; console.log\\(JSON.stringify\\(auth, null, 2\\)\\)\")",
+      "Bash(node -e \"const p = require\\('./node_modules/@firebase/auth/package.json'\\); console.log\\('main:', p.main, 'react-native:', p['react-native']\\)\")",
+      "Bash(curl -s \"https://www.googleapis.com/books/v1/volumes?q=The+Secret&maxResults=1&printType=books&orderBy=relevance\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); v=d['items'][0]['volumeInfo']; print\\(v['title'], '-', v.get\\('authors',['?']\\)\\)\")",
+      "Bash(python -c \"import sys,json; print\\(json.dumps\\(json.load\\(sys.stdin\\), indent=2\\)\\)\")",
+      "Bash(git commit -m 'Wire EXPO_PUBLIC_GOOGLE_BOOKS_API_KEY into CI build env *)"
     ]
   }
 }

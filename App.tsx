@@ -440,7 +440,9 @@ export default function App() {
         if (!data?.tag_name) return;
         const latestBuild = parseInt(data.tag_name.replace('build-', ''), 10);
         if (!isNaN(latestBuild) && latestBuild > CURRENT_BUILD) {
-          const apkUrl = `https://github.com/${GITHUB_REPO}/releases/download/${data.tag_name}/booktrader.apk`;
+          // Use /releases/latest/download/ so the install always resolves to
+          // whichever build is newest at tap-time, skipping all intermediates.
+          const apkUrl = `https://github.com/${GITHUB_REPO}/releases/latest/download/booktrader.apk`;
           setPendingUpdate({ build: latestBuild, apkUrl });
         }
       })

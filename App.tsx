@@ -408,11 +408,24 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUserId || demoMode) return;
-    // Request permission immediately — must happen regardless of EAS push token availability.
     Notifications.requestPermissionsAsync().catch(() => undefined);
-    // Register Expo push token only if EAS project ID is configured.
     registerPushToken(currentUserId).catch(() => undefined);
   }, [currentUserId, demoMode]);
+
+  // Silently refresh coordinates in the background when profile has none.
+  // Runs once per session after profile loads.
+  useEffect(() => {
+    if (!currentProfile || currentProfile.coordinates || demoMode || !firebase.db) return;
+    requestCoordinates().then((coords) => {
+      if (!coords || !firebase.db) return;
+      setDoc(
+        doc(firebase.db, 'users', currentProfile.id),
+        { coordinates: coords, updatedAt: now() },
+        { merge: true },
+      ).catch(() => undefined);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProfile?.id]);
 
   useEffect(() => {
     if (!currentProfile || updateChecked.current || Platform.OS !== 'android' || CURRENT_BUILD === 0) {
@@ -653,6 +666,20 @@ export default function App() {
       const createdAt = now();
       const listingId = makeId('listing');
 
+      // Always get fresh coordinates at publish time so listings are accurate
+      // even if profile coordinates were null from a registration GPS timeout.
+      const freshCoords = await requestCoordinates();
+      const ownerCoordinates = freshCoords ?? currentProfile.coordinates ?? null;
+
+      // Persist fresh coords back to profile so future distance calcs work
+      if (freshCoords && !demoMode && firebase.db) {
+        setDoc(
+          doc(firebase.db, 'users', currentProfile.id),
+          { coordinates: freshCoords, updatedAt: now() },
+          { merge: true },
+        ).catch(() => undefined);
+      }
+
       const listing: BookListing = {
         ...input.draft,
         id: listingId,
@@ -660,7 +687,7 @@ export default function App() {
         ownerName: currentProfile.legalName,
         ownerCity: currentProfile.city,
         ownerCommunity: currentProfile.community,
-        ownerCoordinates: currentProfile.coordinates ?? null,
+        ownerCoordinates,
         coverImageUrl: input.draft.coverImageUrl ?? null,
         frontImageUrl: input.draft.coverImageUrl ?? null,
         backImageUrl: null,

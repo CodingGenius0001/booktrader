@@ -57,17 +57,13 @@ function pickBestItem(items: BooksApiResponse['items']): VolumeInfo | null {
 export async function lookupBookFromGoogleBooks(query: string): Promise<BookDraft> {
   if (!query.trim()) return EMPTY_DRAFT;
 
-  // Use the Firebase / Google Cloud API key when available.
-  // The Books API accepts the same key — just make sure "Books API" is enabled
-  // in your Google Cloud Console project alongside Firebase services.
-  const apiKey = process.env.EXPO_PUBLIC_FIREBASE_API_KEY;
-  const keyParam = apiKey ? `&key=${encodeURIComponent(apiKey)}` : '';
-
+  // No API key — Google Books allows unauthenticated requests (1 000/day per IP),
+  // which is more than enough for this app. Sending the Firebase key would cause
+  // a 403 unless the Books API is explicitly enabled on the same GCP project.
   const url =
     `https://www.googleapis.com/books/v1/volumes` +
     `?q=${encodeURIComponent(query.trim())}` +
-    `&maxResults=5&printType=books&orderBy=relevance` +
-    keyParam;
+    `&maxResults=5&printType=books&orderBy=relevance`;
 
   const response = await fetch(url, { headers: { Accept: 'application/json' } });
 

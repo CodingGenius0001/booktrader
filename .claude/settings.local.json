@@ -27,7 +27,8 @@
       "Bash(xargs grep *)",
       "Bash(python3 -c \"import sys,json; [print\\(r['tag_name'], '-', r['name']\\) for r in json.load\\(sys.stdin\\)]\")",
       "Bash(python3 -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\(r['tag_name'], r['name'], '\\\\ncommit:', r['target_commitish']\\)\")",
-      "Bash(node scripts/make-icon.js)"
+      "Bash(node scripts/make-icon.js)",
+      "Bash(node -e \"const a = require\\('C:\\\\\\\\Users\\\\\\\\Keshav Pillarisetti\\\\\\\\Desktop\\\\\\\\booktrader-dev\\\\\\\\node_modules\\\\\\\\firebase\\\\\\\\auth.js'\\); console.log\\(Object.keys\\(a\\).filter\\(k => k.toLowerCase\\(\\).includes\\('persist'\\) || k.toLowerCase\\(\\).includes\\('native'\\)\\)\\)\")"
     ]
   }
 }

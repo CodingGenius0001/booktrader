@@ -1018,7 +1018,11 @@ export default function App() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
       <View style={styles.appShell}>
-        <Header profile={currentProfile} demoMode={demoMode || !hasFirebaseConfig} />
+        <Header
+          profile={currentProfile}
+          demoMode={demoMode || !hasFirebaseConfig}
+          onProfilePress={() => setActiveTab('profile')}
+        />
         {activeTab === 'market' && (
           <MarketScreen
             currentProfile={currentProfile}
@@ -1158,7 +1162,15 @@ function Avatar({ name, photoUrl, size }: { name: string; photoUrl?: string | nu
   );
 }
 
-function Header({ profile, demoMode }: { profile: UserProfile; demoMode: boolean }) {
+function Header({
+  profile,
+  demoMode,
+  onProfilePress,
+}: {
+  profile: UserProfile;
+  demoMode: boolean;
+  onProfilePress: () => void;
+}) {
   return (
     <View style={styles.header}>
       <View>
@@ -1167,7 +1179,9 @@ function Header({ profile, demoMode }: { profile: UserProfile; demoMode: boolean
           {profile.community} {demoMode ? '· Demo' : ''}
         </Text>
       </View>
-      <Avatar name={profile.legalName} photoUrl={profile.photoUrl} size="sm" />
+      <Pressable onPress={onProfilePress} style={({ pressed }) => pressed && styles.pressed}>
+        <Avatar name={profile.legalName} photoUrl={profile.photoUrl} size="sm" />
+      </Pressable>
     </View>
   );
 }
@@ -1587,24 +1601,21 @@ function AddListingScreen({
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.scrollContent}>
       <Text style={styles.sectionTitle}>New Listing</Text>
-      <View style={styles.actionRow}>
-        <SecondaryButton
-          label="Refresh lookup"
-          icon="library-outline"
-          loading={autofilling}
-          onPress={() => {
-            if (!draft.title.trim()) {
-              Alert.alert('Title required', 'Enter a book title first.');
-              return;
-            }
-
-            setAutofilling(true);
-            runLookup(draft.title)
-              .catch(() => undefined)
-              .finally(() => setAutofilling(false));
-          }}
-        />
-      </View>
+      <SecondaryButton
+        label={autofilling ? 'Searching Google Books…' : 'Search Google Books again'}
+        icon="search-outline"
+        loading={autofilling}
+        onPress={() => {
+          if (!draft.title.trim()) {
+            Alert.alert('Title required', 'Enter a book title first, then tap to search.');
+            return;
+          }
+          setAutofilling(true);
+          runLookup(draft.title)
+            .catch(() => undefined)
+            .finally(() => setAutofilling(false));
+        }}
+      />
       <View style={styles.coverPreviewWrap}>
         <Text style={styles.label}>Cover preview</Text>
         {draft.coverImageUrl ? (
@@ -1851,9 +1862,9 @@ function ProfileScreen({
         <View style={styles.updatesHeader}>
           <Ionicons name="cloud-download-outline" size={18} color={colors.teal} />
           <Text style={styles.updatesTitle}>Updates</Text>
-          {CURRENT_BUILD > 0 && (
-            <Text style={styles.updatesBuild}>Build {CURRENT_BUILD}</Text>
-          )}
+          <Text style={styles.updatesBuild}>
+            v0.1.0{CURRENT_BUILD > 0 ? ` · build ${CURRENT_BUILD}` : ''}
+          </Text>
         </View>
 
         {downloadProgress !== null ? (
@@ -1869,9 +1880,12 @@ function ProfileScreen({
             <PrimaryButton label="Install update now" icon="download-outline" onPress={onInstallUpdate} />
           </View>
         ) : upToDate ? (
-          <View style={styles.upToDateRow}>
-            <Ionicons name="checkmark-circle" size={16} color={colors.success} />
-            <Text style={[styles.mutedText, { color: colors.success }]}>You're on the latest version</Text>
+          <View style={{ gap: spacing.sm }}>
+            <View style={styles.upToDateRow}>
+              <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+              <Text style={[styles.mutedText, { color: colors.success }]}>You're on the latest version</Text>
+            </View>
+            <SecondaryButton label="Check again" icon="refresh-outline" onPress={onCheckUpdate} />
           </View>
         ) : (
           <SecondaryButton
@@ -1884,7 +1898,9 @@ function ProfileScreen({
       </View>
 
       <SecondaryButton label="Sign out" icon="log-out-outline" onPress={onSignOut} />
-      {CURRENT_BUILD > 0 && <Text style={styles.buildLabel}>Build {CURRENT_BUILD}</Text>}
+      <Text style={styles.buildLabel}>
+        v0.1.0{CURRENT_BUILD > 0 ? ` · build ${CURRENT_BUILD}` : ''}
+      </Text>
 
       <EditListingModal
         listing={editingListing}

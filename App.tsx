@@ -970,14 +970,6 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
-      {pendingUpdate && (
-        <UpdateBanner
-          build={pendingUpdate.build}
-          progress={downloadProgress}
-          onUpdate={downloadAndInstall}
-          onDismiss={() => setPendingUpdate(null)}
-        />
-      )}
       <View style={styles.appShell}>
         <Header profile={currentProfile} demoMode={demoMode || !hasFirebaseConfig} />
         {activeTab === 'market' && (
@@ -1017,6 +1009,14 @@ export default function App() {
           />
         )}
       </View>
+      {pendingUpdate && (
+        <UpdateBanner
+          build={pendingUpdate.build}
+          progress={downloadProgress}
+          onUpdate={downloadAndInstall}
+          onDismiss={() => setPendingUpdate(null)}
+        />
+      )}
       <TabBar activeTab={activeTab} onChange={setActiveTab} badge={pendingIncoming} />
     </SafeAreaView>
   );
@@ -2391,6 +2391,7 @@ const styles = StyleSheet.create({
   },
   appShell: {
     flex: 1,
+    overflow: 'hidden',
   },
   header: {
     alignItems: 'center',
@@ -2435,7 +2436,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
   },
   scrollContent: {
-    paddingBottom: 120,
+    paddingBottom: spacing.xl,
   },
   authWrap: {
     flex: 1,
@@ -3083,14 +3084,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderTopColor: colors.border,
     borderTopWidth: 1,
-    bottom: 0,
     flexDirection: 'row',
     height: 76,
     justifyContent: 'space-around',
-    left: 0,
     paddingBottom: Platform.OS === 'ios' ? spacing.md : spacing.sm,
-    position: 'absolute',
-    right: 0,
   },
   tabButton: {
     alignItems: 'center',

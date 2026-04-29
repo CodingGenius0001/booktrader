@@ -17,6 +17,7 @@ import {
   Pressable,
   SafeAreaView,
   ScrollView,
+  StatusBar as RNStatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -269,6 +270,7 @@ function mapOffer(id: string, value: Record<string, unknown>): TradeOffer {
     createdAt: Number(value.createdAt ?? now()),
     updatedAt: Number(value.updatedAt ?? now()),
     messages: (value.messages as TradeMessage[] | undefined) ?? [],
+    ratedBy: (value.ratedBy as string[] | undefined) ?? [],
   };
 }
 
@@ -407,9 +409,11 @@ export default function App() {
 
 
   useEffect(() => {
-    if (currentUserId && !demoMode) {
-      registerPushToken(currentUserId).catch(() => undefined);
-    }
+    if (!currentUserId || demoMode) return;
+    // Request permission immediately — must happen regardless of EAS push token availability.
+    Notifications.requestPermissionsAsync().catch(() => undefined);
+    // Register Expo push token only if EAS project ID is configured.
+    registerPushToken(currentUserId).catch(() => undefined);
   }, [currentUserId, demoMode]);
 
   useEffect(() => {
@@ -464,6 +468,9 @@ export default function App() {
           input.email.trim(),
           input.password,
         );
+        // Send email verification so accounts can't be spoofed
+        const { sendEmailVerification } = await import('firebase/auth');
+        await sendEmailVerification(created.user).catch(() => undefined);
         const coordinates = await requestCoordinates();
         await saveProfile(created.user.uid, {
           legalName: input.legalName.trim(),
@@ -474,6 +481,7 @@ export default function App() {
           wishlist: [],
           photoUrl: created.user.photoURL,
         });
+        Alert.alert('Verify your email', `A verification link was sent to ${input.email.trim()}. You can continue using the app while you verify.`);
       } else {
         await signInWithEmailAndPassword(firebase.auth, input.email.trim(), input.password);
       }
@@ -669,6 +677,23 @@ export default function App() {
     }
   }
 
+  async function editListing(listingId: string, patch: Partial<Pick<BookListing, 'title' | 'author' | 'edition' | 'description' | 'wants'>>) {
+    if (demoMode || !firebase.db) {
+      setListings((cur) => cur.map((l) => (l.id === listingId ? { ...l, ...patch } : l)));
+      return;
+    }
+    await updateDoc(doc(firebase.db, 'listings', listingId), { ...patch, updatedAt: now() });
+  }
+
+  async function deleteListing(listingId: string) {
+    if (demoMode || !firebase.db) {
+      setListings((cur) => cur.filter((l) => l.id !== listingId));
+      return;
+    }
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(firebase.db, 'listings', listingId));
+  }
+
   async function requestTrade(listing: BookListing, offeredBooks: string, note: string) {
     if (!currentProfile) {
       return;
@@ -699,6 +724,7 @@ export default function App() {
       createdAt,
       updatedAt: createdAt,
       messages: [],
+      ratedBy: [],
     };
 
     if (demoMode || !firebase.db) {
@@ -740,43 +766,44 @@ export default function App() {
 
     const db = firebase.db;
 
-    if (status === 'accepted') {
-      const batch = writeBatch(db);
-      batch.update(doc(db, 'tradeOffers', offer.id), {
-        status: 'accepted',
-        updatedAt,
-      });
-      batch.update(doc(db, 'listings', offer.listingId), {
-        status: 'claimed',
-        claimedBy: offer.requesterId,
-      });
+    try {
+      if (status === 'accepted') {
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'tradeOffers', offer.id), { status: 'accepted', updatedAt });
+        batch.update(doc(db, 'listings', offer.listingId), {
+          status: 'claimed',
+          claimedBy: offer.requesterId,
+        });
 
-      const otherOffers = await getDocs(
-        query(collection(db, 'tradeOffers'), where('listingId', '==', offer.listingId)),
+        // Must include listingOwnerId filter so Firestore security rules can verify access.
+        const otherOffers = await getDocs(
+          query(
+            collection(db, 'tradeOffers'),
+            where('listingId', '==', offer.listingId),
+            where('listingOwnerId', '==', offer.listingOwnerId),
+          ),
+        );
+
+        otherOffers.docs.forEach((item) => {
+          if (item.id !== offer.id) {
+            batch.update(doc(db, 'tradeOffers', item.id), { status: 'declined', updatedAt });
+          }
+        });
+
+        await batch.commit();
+        return;
+      }
+
+      await updateDoc(doc(db, 'tradeOffers', offer.id), { status, updatedAt });
+
+      if (status === 'completed') {
+        await updateDoc(doc(db, 'listings', offer.listingId), { status: 'completed' });
+      }
+    } catch (error) {
+      Alert.alert(
+        'Action failed',
+        error instanceof Error ? error.message : 'Could not update the trade. Try again.',
       );
-
-      otherOffers.docs.forEach((item) => {
-        if (item.id !== offer.id) {
-          batch.update(doc(db, 'tradeOffers', item.id), {
-            status: 'declined',
-            updatedAt,
-          });
-        }
-      });
-
-      await batch.commit();
-      return;
-    }
-
-    await updateDoc(doc(db, 'tradeOffers', offer.id), {
-      status,
-      updatedAt,
-    });
-
-    if (status === 'completed') {
-      await updateDoc(doc(db, 'listings', offer.listingId), {
-        status: 'completed',
-      });
     }
   }
 
@@ -809,28 +836,33 @@ export default function App() {
     });
   }
 
-  async function rateTrade(offer: TradeOffer, rating: number) {
-    if (!currentProfile) {
-      return;
-    }
-
+  async function rateTrade(offer: TradeOffer, rating: number, reviewText: string) {
+    if (!currentProfile) return;
     const ratedUserId =
       offer.requesterId === currentProfile.id ? offer.listingOwnerId : offer.requesterId;
 
     if (demoMode || !firebase.db) {
-      Alert.alert('Rating saved', `${rating} star rating recorded for this trade.`);
+      Alert.alert('Rating saved', `${rating} star rating recorded.`);
       return;
     }
 
     const db = firebase.db;
+    // Save rating document
     await addDoc(collection(db, 'ratings'), {
       offerId: offer.id,
       fromUserId: currentProfile.id,
       toUserId: ratedUserId,
       rating,
+      review: reviewText.trim(),
       createdAt: now(),
     });
 
+    // Mark this user as having rated on the offer so the stars don't reappear
+    await updateDoc(doc(db, 'tradeOffers', offer.id), {
+      ratedBy: [...(offer.ratedBy ?? []), currentProfile.id],
+    });
+
+    // Recompute rated user's aggregate
     const ratingsSnap = await getDocs(
       query(collection(db, 'ratings'), where('toUserId', '==', ratedUserId)),
     );
@@ -842,7 +874,7 @@ export default function App() {
       ratingCount,
     });
 
-    Alert.alert('Rating saved', `${rating} star rating recorded for this trade.`);
+    Alert.alert('Rating saved', `${rating}★ rating submitted. Thank you!`);
   }
 
   async function handleSignOut() {
@@ -868,7 +900,6 @@ export default function App() {
         busy={busy}
         onEmailAuth={handleEmailAuth}
         onGoogle={handleGoogleSignIn}
-        onDemo={() => setDemoMode(true)}
       />
     );
   }
@@ -932,6 +963,8 @@ export default function App() {
             profile={currentProfile}
             listings={listings}
             onSave={handleProfileComplete}
+            onEditListing={editListing}
+            onDeleteListing={deleteListing}
             onSignOut={handleSignOut}
           />
         )}
@@ -978,7 +1011,6 @@ function AuthScreen({
   busy,
   onEmailAuth,
   onGoogle,
-  onDemo,
 }: {
   busy: boolean;
   onEmailAuth: (input: {
@@ -990,7 +1022,6 @@ function AuthScreen({
     community: string;
   }) => void;
   onGoogle: () => void;
-  onDemo: () => void;
 }) {
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
@@ -1074,9 +1105,24 @@ function AuthScreen({
               }
             />
             <SecondaryButton label="Continue with Google" icon="logo-google" onPress={onGoogle} />
-            <Pressable onPress={onDemo} style={styles.demoLink}>
-              <Text style={styles.demoLinkText}>Preview without Firebase credentials</Text>
-            </Pressable>
+            {mode === 'login' && (
+              <Pressable
+                onPress={() => {
+                  if (!email.trim()) {
+                    Alert.alert('Enter your email first', 'Type your email above then tap forgot password.');
+                    return;
+                  }
+                  if (!firebase.auth) return;
+                  const { sendPasswordResetEmail } = require('firebase/auth');
+                  sendPasswordResetEmail(firebase.auth, email.trim())
+                    .then(() => Alert.alert('Reset email sent', `Check ${email.trim()} for a password reset link.`))
+                    .catch((e: Error) => Alert.alert('Error', e.message));
+                }}
+                style={styles.forgotLink}
+              >
+                <Text style={styles.forgotLinkText}>Forgot password?</Text>
+              </Pressable>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -1340,7 +1386,7 @@ function AddListingScreen({
 
     const title = draft.title.trim();
 
-    if (title.length < 3) {
+    if (title.length < 2) {
       return;
     }
 
@@ -1456,7 +1502,7 @@ function TradesScreen({
   onDecline: (offer: TradeOffer) => void;
   onComplete: (offer: TradeOffer) => void;
   onSendMessage: (offer: TradeOffer, text: string) => void;
-  onRate: (offer: TradeOffer, rating: number) => void;
+  onRate: (offer: TradeOffer, rating: number, review: string) => void;
 }) {
   const [filter, setFilter] = useState<'all' | 'incoming' | 'outgoing'>('all');
   const visibleOffers = offers.filter((offer) => {
@@ -1495,7 +1541,7 @@ function TradesScreen({
               onDecline={() => onDecline(offer)}
               onComplete={() => onComplete(offer)}
               onSend={(text) => onSendMessage(offer, text)}
-              onRate={(rating) => onRate(offer, rating)}
+              onRate={(rating, review) => onRate(offer, rating, review)}
             />
           ))
         )}
@@ -1508,22 +1554,22 @@ function ProfileScreen({
   profile,
   listings,
   onSave,
+  onEditListing,
+  onDeleteListing,
   onSignOut,
 }: {
   profile: UserProfile;
   listings: BookListing[];
-  onSave: (values: {
-    legalName: string;
-    city: string;
-    community: string;
-    wishlist: string[];
-  }) => void;
+  onSave: (values: { legalName: string; city: string; community: string; wishlist: string[] }) => void;
+  onEditListing: (id: string, patch: Partial<Pick<BookListing, 'title' | 'author' | 'edition' | 'description' | 'wants'>>) => void;
+  onDeleteListing: (id: string) => void;
   onSignOut: () => void;
 }) {
   const [legalName, setLegalName] = useState(profile.legalName);
   const [city, setCity] = useState(profile.city);
   const [community, setCommunity] = useState(profile.community);
   const [wishlistText, setWishlistText] = useState(profile.wishlist.join(', '));
+  const [editingListing, setEditingListing] = useState<BookListing | null>(null);
   const ownListings = listings.filter((listing) => listing.ownerId === profile.id);
 
   return (
@@ -1531,13 +1577,7 @@ function ProfileScreen({
       <View style={styles.profileSummary}>
         <View style={styles.avatarLarge}>
           <Text style={styles.avatarLargeText}>
-            {profile.legalName
-              .split(' ')
-              .filter(Boolean)
-              .slice(0, 2)
-              .map((part) => part[0])
-              .join('')
-              .toUpperCase()}
+            {profile.legalName.split(' ').filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase()}
           </Text>
         </View>
         <View style={styles.profileSummaryText}>
@@ -1546,7 +1586,7 @@ function ProfileScreen({
           <View style={styles.inlineRating}>
             <Ionicons name="star" color={colors.brass} size={16} />
             <Text style={styles.mutedText}>
-              {(profile.ratingAverage ?? 0).toFixed(1)} ({profile.ratingCount ?? 0})
+              {(profile.ratingAverage ?? 0).toFixed(1)} ({profile.ratingCount ?? 0} ratings)
             </Text>
           </View>
         </View>
@@ -1554,12 +1594,7 @@ function ProfileScreen({
       <Field label="Legal name" value={legalName} onChangeText={setLegalName} />
       <Field label="City" value={city} onChangeText={setCity} />
       <Field label="Community" value={community} onChangeText={setCommunity} />
-      <Field
-        label="Wishlist"
-        value={wishlistText}
-        onChangeText={setWishlistText}
-        multiline
-      />
+      <Field label="Wishlist" value={wishlistText} onChangeText={setWishlistText} multiline />
       <PrimaryButton
         label="Save profile"
         icon="save-outline"
@@ -1568,10 +1603,7 @@ function ProfileScreen({
             legalName,
             city,
             community,
-            wishlist: wishlistText
-              .split(',')
-              .map((item) => item.trim())
-              .filter(Boolean),
+            wishlist: wishlistText.split(',').map((i) => i.trim()).filter(Boolean),
           })
         }
       />
@@ -1580,18 +1612,106 @@ function ProfileScreen({
         <Text style={styles.mutedText}>{ownListings.length}</Text>
       </View>
       {ownListings.map((listing) => (
-        <ListingCard
-          key={listing.id}
-          listing={listing}
-          personalStatus={listing.status}
-          distance={formatDaysLeft(listing.expiresAt)}
-        />
+        <View key={listing.id}>
+          <ListingCard
+            listing={listing}
+            personalStatus={listing.status}
+            distance={formatDaysLeft(listing.expiresAt)}
+          />
+          {listing.status === 'open' && (
+            <View style={[styles.actionRow, { marginTop: -spacing.sm, marginBottom: spacing.md }]}>
+              <SecondaryButton
+                label="Edit"
+                icon="create-outline"
+                compact
+                onPress={() => setEditingListing(listing)}
+              />
+              <SecondaryButton
+                label="Delete"
+                icon="trash-outline"
+                compact
+                onPress={() =>
+                  Alert.alert('Delete listing?', 'This cannot be undone.', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Delete', style: 'destructive', onPress: () => onDeleteListing(listing.id) },
+                  ])
+                }
+              />
+            </View>
+          )}
+        </View>
       ))}
       <SecondaryButton label="Sign out" icon="log-out-outline" onPress={onSignOut} />
-      {CURRENT_BUILD > 0 && (
-        <Text style={styles.buildLabel}>Build {CURRENT_BUILD}</Text>
-      )}
+      {CURRENT_BUILD > 0 && <Text style={styles.buildLabel}>Build {CURRENT_BUILD}</Text>}
+
+      <EditListingModal
+        listing={editingListing}
+        onClose={() => setEditingListing(null)}
+        onSave={(patch) => {
+          if (editingListing) onEditListing(editingListing.id, patch);
+          setEditingListing(null);
+        }}
+      />
     </ScrollView>
+  );
+}
+
+function EditListingModal({
+  listing,
+  onClose,
+  onSave,
+}: {
+  listing: BookListing | null;
+  onClose: () => void;
+  onSave: (patch: Partial<Pick<BookListing, 'title' | 'author' | 'edition' | 'description' | 'wants'>>) => void;
+}) {
+  const [title, setTitle] = useState('');
+  const [author, setAuthor] = useState('');
+  const [edition, setEdition] = useState('');
+  const [description, setDescription] = useState('');
+  const [wants, setWants] = useState('');
+
+  useEffect(() => {
+    if (listing) {
+      setTitle(listing.title);
+      setAuthor(listing.author);
+      setEdition(listing.edition);
+      setDescription(listing.description);
+      setWants(listing.wants);
+    }
+  }, [listing]);
+
+  return (
+    <Modal transparent visible={Boolean(listing)} animationType="slide" onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flexOne}>
+          <View style={[styles.modalSheet, { maxHeight: '90%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.sectionTitle}>Edit listing</Text>
+              <IconButton icon="close" onPress={onClose} />
+            </View>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Field label="Title" value={title} onChangeText={setTitle} />
+              <Field label="Author" value={author} onChangeText={setAuthor} />
+              <Field label="Edition / Year" value={edition} onChangeText={setEdition} />
+              <Field label="Description" value={description} onChangeText={setDescription} multiline />
+              <Field label="What you want in return" value={wants} onChangeText={setWants} multiline />
+              <PrimaryButton
+                label="Save changes"
+                icon="save-outline"
+                onPress={() => {
+                  if (!title.trim()) {
+                    Alert.alert('Title required', 'Enter a book title.');
+                    return;
+                  }
+                  onSave({ title: title.trim(), author: author.trim(), edition: edition.trim(), description: description.trim(), wants: wants.trim() });
+                }}
+              />
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
   );
 }
 
@@ -1790,10 +1910,10 @@ function TradeCard({
   onDecline: () => void;
   onComplete: () => void;
   onSend: (text: string) => void;
-  onRate: (rating: number) => void;
+  onRate: (rating: number, review: string) => void;
 }) {
   const [message, setMessage] = useState('');
-  const [rated, setRated] = useState(false);
+  const [review, setReview] = useState('');
   const chatRef = useRef<ScrollView>(null);
   const isOwner = offer.listingOwnerId === currentProfile.id;
   const isAccepted = offer.status === 'accepted';
@@ -1900,18 +2020,29 @@ function TradeCard({
         </>
       )}
 
-      {isCompleted && !rated && (
-        <View style={styles.ratingRow}>
-          <Text style={[styles.mutedText, { marginRight: spacing.sm }]}>Rate this trade:</Text>
-          {[1, 2, 3, 4, 5].map((r) => (
-            <Pressable key={r} onPress={() => { onRate(r); setRated(true); }} style={styles.starButton}>
-              <Ionicons name="star" size={21} color={colors.brass} />
-            </Pressable>
-          ))}
+      {isCompleted && !(offer.ratedBy ?? []).includes(currentProfile.id) && (
+        <View style={{ gap: spacing.sm, marginTop: spacing.sm }}>
+          <Text style={styles.label}>Rate this trade</Text>
+          <Text style={styles.mutedText}>How was the experience? (attitude, friendliness, punctuality)</Text>
+          <View style={styles.ratingRow}>
+            {[1, 2, 3, 4, 5].map((r) => (
+              <Pressable key={r} onPress={() => { onRate(r, review); }} style={styles.starButton}>
+                <Ionicons name="star" size={26} color={colors.brass} />
+              </Pressable>
+            ))}
+          </View>
+          <TextInput
+            value={review}
+            onChangeText={setReview}
+            placeholder="Optional written review…"
+            placeholderTextColor={colors.muted}
+            style={[styles.input, styles.textArea, { minHeight: 70 }]}
+            multiline
+          />
         </View>
       )}
-      {isCompleted && rated && (
-        <Text style={[styles.mutedText, { marginTop: spacing.sm }]}>Rating submitted. Thanks!</Text>
+      {isCompleted && (offer.ratedBy ?? []).includes(currentProfile.id) && (
+        <Text style={[styles.mutedText, { marginTop: spacing.sm }]}>You've rated this trade. Thanks!</Text>
       )}
     </View>
   );
@@ -2167,7 +2298,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
-    paddingTop: Platform.OS === 'android' ? spacing.lg : spacing.sm,
+    paddingTop: Platform.OS === 'android'
+      ? (RNStatusBar.currentHeight ?? 24) + spacing.sm
+      : spacing.sm,
     paddingBottom: spacing.md,
   },
   brand: {
@@ -2215,6 +2348,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: spacing.lg,
     paddingBottom: spacing.xl,
+    paddingTop: Platform.OS === 'android'
+      ? (RNStatusBar.currentHeight ?? 24) + spacing.lg
+      : spacing.lg,
   },
   authHero: {
     paddingTop: spacing.xl,
@@ -2724,6 +2860,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.xs,
     marginTop: spacing.xs,
+  },
+  forgotLink: {
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+  },
+  forgotLinkText: {
+    color: colors.muted,
+    fontSize: 13,
   },
   buildLabel: {
     color: colors.border,

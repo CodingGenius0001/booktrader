@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(curl -s \"https://api.github.com/repos/CodingGenius0001/booktrader/releases?per_page=5\")",
+      "Bash(python3 -c \"import sys,json; releases=json.load\\(sys.stdin\\); [print\\(r['tag_name'], r['name'], 'assets:', [a['name'] for a in r['assets']]\\) for r in releases]\")",
+      "Bash(curl -sI \"https://github.com/CodingGenius0001/booktrader/releases/download/build-12/booktrader.apk\")",
+      "Bash(curl -sIL \"https://github.com/CodingGenius0001/booktrader/releases/download/build-12/booktrader.apk\")",
+      "Bash(curl -sIL \"https://github.com/CodingGenius0001/booktrader/releases/latest/download/booktrader.apk\")",
+      "Bash(curl -s \"https://api.github.com/repos/CodingGenius0001/booktrader/releases/latest\")",
+      "Bash(python3 -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\('Latest:', r['tag_name'], '|', r['name']\\); [print\\(' asset:', a['name'], a['browser_download_url']\\) for a in r['assets']]\")",
+      "Bash(python3 -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\('Latest tag:', r['tag_name']\\); [print\\('Download:', a['browser_download_url']\\) for a in r['assets']]\")",
+      "Bash(curl -s \"https://api.github.com/repos/CodingGenius0001/booktrader/actions/runs?per_page=3&status=success\")",
+      "Bash(python3 -c ' *)",
+      "Bash(curl -s \"https://api.github.com/repos/CodingGenius0001/booktrader/actions/runs/25068152127/jobs\")",
+      "Bash(curl -s \"https://api.github.com/repos/CodingGenius0001/booktrader/actions/jobs/73440822231/logs\" -L)",
+      "Bash(curl -s -o /tmp/ci_log.txt -w \"%{http_code}\" \"https://api.github.com/repos/CodingGenius0001/booktrader/actions/jobs/73440822231/logs\" -L)",
+      "Read(//tmp/**)",
+      "Bash(npm install *)",
+      "Bash(node -e \"console.log\\(require\\('@react-native-google-signin/google-signin/package.json'\\).version\\)\")",
+      "Bash(node -e \"const fs=require\\('expo-file-system'\\); console.log\\(Object.keys\\(fs\\).filter\\(k=>k.includes\\('ache'\\)||k.includes\\('Dir'\\)\\)\\)\")",
+      "Bash(node -e \"const fs=require\\('./node_modules/expo-file-system'\\); console.log\\(Object.keys\\(fs\\).filter\\(k=>k.toLowerCase\\(\\).includes\\('dir'\\)||k.toLowerCase\\(\\).includes\\('cache'\\)\\)\\)\")",
+      "Bash(node -e \"try{require\\('./node_modules/react-native-safe-area-context/package.json'\\); console.log\\('installed:', require\\('./node_modules/react-native-safe-area-context/package.json'\\).version\\)}catch\\(e\\){console.log\\('not found'\\)}\")",
+      "Bash(xargs grep *)"
+    ]
+  }
+}

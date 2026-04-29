@@ -106,6 +106,7 @@ export const demoOffers: TradeOffer[] = [
     createdAt: now - 4 * 60 * 60 * 1000,
     updatedAt: now - 4 * 60 * 60 * 1000,
     messages: [],
+    ratedBy: [],
   },
   {
     id: 'offer-2',
@@ -120,6 +121,7 @@ export const demoOffers: TradeOffer[] = [
     status: 'accepted',
     createdAt: now - day,
     updatedAt: now - 2 * 60 * 60 * 1000,
+    ratedBy: [],
     messages: [
       {
         id: 'message-1',

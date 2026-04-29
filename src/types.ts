@@ -69,4 +69,5 @@ export type TradeOffer = {
   createdAt: number;
   updatedAt: number;
   messages: TradeMessage[];
+  ratedBy: string[];
 };

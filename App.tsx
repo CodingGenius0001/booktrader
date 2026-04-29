@@ -280,6 +280,7 @@ function mapOffer(id: string, value: Record<string, unknown>): TradeOffer {
 export default function App() {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(hasFirebaseConfig);
+  const [profileLoading, setProfileLoading] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [demoProfile, setDemoProfile] = useState<UserProfile>(demoUser);
   const [demoMode, setDemoMode] = useState(!hasFirebaseConfig);
@@ -316,16 +317,19 @@ export default function App() {
 
   useEffect(() => {
     if (!firebase.db || demoMode || !firebaseUser) {
+      setProfileLoading(false);
       return;
     }
-
+    // Show loading until the first Firestore snapshot arrives so we never
+    // flash the ProfileOnboarding screen for users who already have a profile.
+    setProfileLoading(true);
     const userRef = doc(firebase.db, 'users', firebaseUser.uid);
     return onSnapshot(userRef, (snapshot) => {
+      setProfileLoading(false);
       if (!snapshot.exists()) {
         setProfile(null);
         return;
       }
-
       setProfile({
         id: firebaseUser.uid,
         ...(snapshot.data() as Omit<UserProfile, 'id'>),
@@ -548,11 +552,10 @@ export default function App() {
 
         // Send verification email IMMEDIATELY — before requestCoordinates()
         // which can block for 30-60 s waiting for a GPS fix on Android.
+        // No actionCodeSettings: the continueUrl must be in Firebase's authorized
+        // domains list or the send is silently dropped. Default template works fine.
         try {
-          await sendEmailVerification(created.user, {
-            url: `https://${process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? ''}`,
-            handleCodeInApp: false,
-          });
+          await sendEmailVerification(created.user);
         } catch (verifyErr) {
           Alert.alert(
             'Account created but verification email failed',
@@ -1022,7 +1025,7 @@ export default function App() {
     }
   }
 
-  if (authLoading) {
+  if (authLoading || profileLoading) {
     return <LoadingScreen />;
   }
 
@@ -1045,13 +1048,10 @@ export default function App() {
         email={firebaseUser.email ?? ''}
         onResend={async () => {
           try {
-            await sendEmailVerification(firebaseUser, {
-              url: `https://${process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? ''}`,
-              handleCodeInApp: false,
-            });
+            await sendEmailVerification(firebaseUser);
             Alert.alert(
               'Email sent',
-              `Sent to ${firebaseUser.email}.\n\nCheck your spam / junk folder and search for: noreply@`,
+              `Sent to ${firebaseUser.email}.\n\nCheck spam and search for "noreply@" — Firebase sends from noreply@<project-id>.firebaseapp.com`,
             );
           } catch (e) {
             Alert.alert(
@@ -1188,12 +1188,12 @@ function EmailVerificationGate({
     <SafeAreaView style={[styles.safeArea, styles.center]}>
       <StatusBar style="light" />
       <View style={styles.verifyCard}>
-        <Ionicons name="mail-unread-outline" size={48} color={colors.teal} />
+        <Ionicons name="mail-unread-outline" size={40} color={colors.teal} />
         <Text style={styles.verifyTitle}>Verify your email</Text>
         <Text style={styles.verifyBody}>
           We sent a verification link to{'\n'}
           <Text style={{ color: colors.ink, fontWeight: '800' }}>{email}</Text>
-          {'\n\n'}Click the link in that email, then tap the button below.
+          {'\n\n'}Open the email and tap the link, then come back here.
         </Text>
         <PrimaryButton
           label="I've verified — continue"
@@ -1201,15 +1201,17 @@ function EmailVerificationGate({
           loading={busy}
           onPress={() => wrap(onRefresh)}
         />
-        <SecondaryButton
-          label="Resend verification email"
-          icon="send-outline"
-          loading={busy}
-          onPress={() => wrap(onResend)}
-        />
-        <Pressable onPress={onSignOut} style={{ marginTop: spacing.sm }}>
-          <Text style={styles.mutedText}>Use a different account</Text>
-        </Pressable>
+        <View style={styles.verifyLinks}>
+          <Pressable onPress={() => wrap(onResend)} disabled={busy}>
+            <Text style={styles.verifyLinkText}>
+              {busy ? 'Sending…' : 'Resend verification email'}
+            </Text>
+          </Pressable>
+          <Text style={styles.verifyLinkDot}>·</Text>
+          <Pressable onPress={onSignOut}>
+            <Text style={styles.verifyLinkText}>Use a different account</Text>
+          </Pressable>
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -1279,20 +1281,31 @@ function AuthScreen({
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [legalName, setLegalName] = useState('');
   const [city, setCity] = useState(DEFAULT_CITY);
   const [community, setCommunity] = useState(DEFAULT_COMMUNITY);
+
+  function handleSubmit() {
+    if (mode === 'register' && password !== confirmPassword) {
+      Alert.alert('Passwords do not match', 'Make sure both password fields are identical.');
+      return;
+    }
+    onEmailAuth({ mode, email, password, legalName, city, community });
+  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.flexOne}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
       >
         <ScrollView
           contentContainerStyle={styles.authScroll}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.authHero}>
@@ -1306,7 +1319,10 @@ function AuthScreen({
           <View style={styles.authPanel}>
             <SegmentedControl
               value={mode}
-              onChange={(next) => setMode(next as AuthMode)}
+              onChange={(next) => {
+                setMode(next as AuthMode);
+                setConfirmPassword('');
+              }}
               options={[
                 { label: 'Login', value: 'login' },
                 { label: 'Register', value: 'register' },
@@ -1342,20 +1358,19 @@ function AuthScreen({
               onChangeText={setPassword}
               secureTextEntry
             />
+            {mode === 'register' && (
+              <Field
+                label="Confirm password"
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                secureTextEntry
+              />
+            )}
             <PrimaryButton
               label={mode === 'login' ? 'Continue' : 'Create account'}
               icon="mail-outline"
               loading={busy}
-              onPress={() =>
-                onEmailAuth({
-                  mode,
-                  email,
-                  password,
-                  legalName,
-                  city,
-                  community,
-                })
-              }
+              onPress={handleSubmit}
             />
             <SecondaryButton label="Continue with Google" icon="logo-google" onPress={onGoogle} />
             {mode === 'login' && (
@@ -2665,7 +2680,8 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     justifyContent: 'space-between',
     padding: spacing.lg,
-    paddingBottom: spacing.xl,
+    // Extra bottom padding so the bottom of the form stays visible above the keyboard
+    paddingBottom: Platform.OS === 'android' ? 180 : spacing.xl,
     paddingTop: Platform.OS === 'android'
       ? (RNStatusBar.currentHeight ?? 24) + spacing.lg
       : spacing.lg,
@@ -3239,6 +3255,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 22,
     textAlign: 'center',
+  },
+  verifyLinks: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    justifyContent: 'center',
+    marginTop: spacing.xs,
+  },
+  verifyLinkText: {
+    color: colors.teal,
+    fontSize: 13,
+    textDecorationLine: 'underline',
+  },
+  verifyLinkDot: {
+    color: colors.muted,
+    fontSize: 13,
   },
   buildLabel: {
     color: colors.border,

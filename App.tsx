@@ -164,22 +164,18 @@ function readableStatus(status: string) {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-async function requestCoordinates() {
+async function requestCoordinates(): Promise<{ latitude: number; longitude: number } | null> {
   try {
     const permission = await Location.requestForegroundPermissionsAsync();
+    if (permission.status !== 'granted') return null;
 
-    if (permission.status !== 'granted') {
-      return null;
-    }
+    const position = await Promise.race([
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+    ]);
 
-    const position = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.Balanced,
-    });
-
-    return {
-      latitude: position.coords.latitude,
-      longitude: position.coords.longitude,
-    };
+    if (!position) return null;
+    return { latitude: position.coords.latitude, longitude: position.coords.longitude };
   } catch {
     return null;
   }
@@ -470,6 +466,22 @@ export default function App() {
           input.email.trim(),
           input.password,
         );
+
+        // Send verification email IMMEDIATELY — before requestCoordinates()
+        // which can block for 30-60 s waiting for a GPS fix on Android.
+        try {
+          await sendEmailVerification(created.user, {
+            url: `https://${process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? ''}`,
+            handleCodeInApp: false,
+          });
+        } catch (verifyErr) {
+          Alert.alert(
+            'Account created but verification email failed',
+            verifyErr instanceof Error ? verifyErr.message : 'Use the resend button on the next screen.',
+          );
+        }
+
+        // Location request happens after email is already sent.
         const coordinates = await requestCoordinates();
         await saveProfile(created.user.uid, {
           legalName: input.legalName.trim(),
@@ -480,25 +492,6 @@ export default function App() {
           wishlist: [],
           photoUrl: created.user.photoURL,
         });
-        // ActionCodeSettings tells Firebase where to redirect after the user
-        // clicks the link. Using the Firebase auth domain (always authorized).
-        const actionCodeSettings = {
-          url: `https://${process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? ''}`,
-          handleCodeInApp: false,
-        };
-        try {
-          await sendEmailVerification(created.user, actionCodeSettings);
-        } catch (verifyErr) {
-          Alert.alert(
-            'Could not send verification email',
-            verifyErr instanceof Error ? verifyErr.message : 'Check your Firebase project settings.',
-          );
-          return;
-        }
-        Alert.alert(
-          'Check your inbox',
-          `A verification link was sent to ${input.email.trim()}.\n\nCheck your spam / junk folder if it doesn't appear within 2 minutes.\n\nSearch for: noreply@`,
-        );
       } else {
         await signInWithEmailAndPassword(firebase.auth, input.email.trim(), input.password);
       }
@@ -1012,6 +1005,18 @@ export default function App() {
             onSave={handleProfileComplete}
             onEditListing={editListing}
             onDeleteListing={deleteListing}
+            onPhotoChange={async (photoUrl) => {
+              const userId = firebaseUser?.uid ?? demoProfile.id;
+              await saveProfile(userId, {
+                legalName: currentProfile.legalName,
+                email: currentProfile.email,
+                city: currentProfile.city,
+                community: currentProfile.community,
+                coordinates: currentProfile.coordinates,
+                wishlist: currentProfile.wishlist,
+                photoUrl,
+              });
+            }}
             onSignOut={handleSignOut}
           />
         )}
@@ -1087,26 +1092,37 @@ function EmailVerificationGate({
   );
 }
 
+function Avatar({ name, photoUrl, size }: { name: string; photoUrl?: string | null; size: 'sm' | 'lg' }) {
+  const initials = name.split(' ').filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase();
+  const dim = size === 'sm' ? 40 : 64;
+  const fontSize = size === 'sm' ? 14 : 22;
+  const radius = dim / 2;
+
+  if (photoUrl) {
+    return (
+      <Image
+        source={{ uri: photoUrl }}
+        style={{ width: dim, height: dim, borderRadius: radius, backgroundColor: colors.surfaceMuted }}
+      />
+    );
+  }
+  return (
+    <View style={{ width: dim, height: dim, borderRadius: radius, backgroundColor: size === 'lg' ? colors.wine : colors.teal, alignItems: 'center', justifyContent: 'center' }}>
+      <Text style={{ color: '#FFFFFF', fontSize, fontWeight: '900' }}>{initials}</Text>
+    </View>
+  );
+}
+
 function Header({ profile, demoMode }: { profile: UserProfile; demoMode: boolean }) {
   return (
     <View style={styles.header}>
       <View>
         <Text style={styles.brand}>BookTrader</Text>
         <Text style={styles.headerSubtext}>
-          {profile.community} {demoMode ? 'Demo' : ''}
+          {profile.community} {demoMode ? '· Demo' : ''}
         </Text>
       </View>
-      <View style={styles.avatar}>
-        <Text style={styles.avatarText}>
-          {profile.legalName
-            .split(' ')
-            .filter(Boolean)
-            .slice(0, 2)
-            .map((part) => part[0])
-            .join('')
-            .toUpperCase()}
-        </Text>
-      </View>
+      <Avatar name={profile.legalName} photoUrl={profile.photoUrl} size="sm" />
     </View>
   );
 }
@@ -1662,6 +1678,7 @@ function ProfileScreen({
   onSave,
   onEditListing,
   onDeleteListing,
+  onPhotoChange,
   onSignOut,
 }: {
   profile: UserProfile;
@@ -1669,6 +1686,7 @@ function ProfileScreen({
   onSave: (values: { legalName: string; city: string; community: string; wishlist: string[] }) => void;
   onEditListing: (id: string, patch: Partial<Pick<BookListing, 'title' | 'author' | 'edition' | 'description' | 'wants'>>) => void;
   onDeleteListing: (id: string) => void;
+  onPhotoChange: (photoUrl: string) => Promise<void>;
   onSignOut: () => void;
 }) {
   const [legalName, setLegalName] = useState(profile.legalName);
@@ -1676,16 +1694,40 @@ function ProfileScreen({
   const [community, setCommunity] = useState(profile.community);
   const [wishlistText, setWishlistText] = useState(profile.wishlist.join(', '));
   const [editingListing, setEditingListing] = useState<BookListing | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const ownListings = listings.filter((listing) => listing.ownerId === profile.id);
+
+  async function pickPhoto() {
+    const ImagePicker = await import('expo-image-picker');
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) { Alert.alert('Permission needed', 'Allow photo library access to set a profile picture.'); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.7,
+      base64: false,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    setUploadingPhoto(true);
+    try {
+      await onPhotoChange(result.assets[0].uri);
+    } finally {
+      setUploadingPhoto(false);
+    }
+  }
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.scrollContent}>
       <View style={styles.profileSummary}>
-        <View style={styles.avatarLarge}>
-          <Text style={styles.avatarLargeText}>
-            {profile.legalName.split(' ').filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase()}
-          </Text>
-        </View>
+        <Pressable onPress={pickPhoto} style={{ position: 'relative' }}>
+          <Avatar name={profile.legalName} photoUrl={profile.photoUrl} size="lg" />
+          <View style={styles.photoEditBadge}>
+            {uploadingPhoto
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Ionicons name="camera" size={14} color="#fff" />}
+          </View>
+        </Pressable>
         <View style={styles.profileSummaryText}>
           <Text style={styles.sectionTitle}>{profile.legalName}</Text>
           <Text style={styles.mutedText}>{profile.city}</Text>
@@ -2425,19 +2467,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 2,
   },
-  avatar: {
-    alignItems: 'center',
-    backgroundColor: colors.teal,
-    borderRadius: 20,
-    height: 40,
-    justifyContent: 'center',
-    width: 40,
-  },
-  avatarText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
-  },
   screen: {
     flex: 1,
     paddingHorizontal: spacing.lg,
@@ -2950,18 +2979,16 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     marginBottom: spacing.lg,
   },
-  avatarLarge: {
+  photoEditBadge: {
     alignItems: 'center',
-    backgroundColor: colors.wine,
-    borderRadius: 32,
-    height: 64,
+    backgroundColor: colors.teal,
+    borderRadius: 10,
+    bottom: 0,
+    height: 20,
     justifyContent: 'center',
-    width: 64,
-  },
-  avatarLargeText: {
-    color: '#FFFFFF',
-    fontSize: 22,
-    fontWeight: '900',
+    position: 'absolute',
+    right: 0,
+    width: 20,
   },
   profileSummaryText: {
     flex: 1,

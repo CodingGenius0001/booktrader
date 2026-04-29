@@ -452,12 +452,24 @@ export default function App() {
     const unsubIn = onSnapshot(
       query(collection(db, 'tradeOffers'), where('listingOwnerId', '==', currentUserId), orderBy('updatedAt', 'desc')),
       (snap) => mergeAndNotify(snap.docs.map((d) => mapOffer(d.id, d.data())), 'in'),
-      (err) => Alert.alert('Sync error (incoming)', err.message + (err.code ? ` (${err.code})` : '')),
+      (err) => {
+        const isIndexError = err.code === 'failed-precondition';
+        Alert.alert(
+          'Trades not loading',
+          isIndexError
+            ? 'Firestore indexes are missing. Run:\n\nnpx firebase-tools deploy --only firestore\n\nin your project folder to fix this.'
+            : `${err.code ?? err.message}`,
+        );
+      },
     );
     const unsubOut = onSnapshot(
       query(collection(db, 'tradeOffers'), where('requesterId', '==', currentUserId), orderBy('updatedAt', 'desc')),
       (snap) => mergeAndNotify(snap.docs.map((d) => mapOffer(d.id, d.data())), 'out'),
-      (err) => Alert.alert('Sync error (outgoing)', err.message + (err.code ? ` (${err.code})` : '')),
+      (err) => {
+        const isIndexError = err.code === 'failed-precondition';
+        if (isIndexError) return; // already alerted from incoming listener
+        Alert.alert('Trades not loading', `${err.code ?? err.message}`);
+      },
     );
 
     return () => {

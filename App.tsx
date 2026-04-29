@@ -1625,13 +1625,22 @@ function AddListingScreen({
   const [autofilling, setAutofilling] = useState(false);
   const lookupTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function runLookup(query: string) {
-    const next = await onGoogleLookup(query);
-    setDraft((current) => ({
-      ...current,
-      ...next,
-      title: current.title,
-    }));
+  async function runLookup(query: string, showError = false) {
+    try {
+      const next = await onGoogleLookup(query);
+      setDraft((current) => ({
+        ...current,
+        ...next,
+        title: current.title,
+      }));
+    } catch (err) {
+      if (showError) {
+        Alert.alert(
+          'Google Books lookup failed',
+          err instanceof Error ? err.message : 'Check your internet connection and try again.',
+        );
+      }
+    }
   }
 
   useEffect(() => {
@@ -1648,35 +1657,25 @@ function AddListingScreen({
     let cancelled = false;
     lookupTimer.current = setTimeout(() => {
       setAutofilling(true);
-      onGoogleLookup(title)
-        .then((next) => {
-          if (cancelled) {
-            return;
-          }
-
-          setDraft((current) => ({
-            ...current,
-            ...next,
-            title: current.title,
-          }));
-        })
-        .catch(() => undefined)
-        .finally(() => setAutofilling(false));
-    }, 600);
+      // Silent on auto-lookup — user is still typing, an alert would be jarring.
+      runLookup(title, false).finally(() => {
+        if (!cancelled) setAutofilling(false);
+      });
+    }, 800);
 
     return () => {
       cancelled = true;
-      if (lookupTimer.current) {
-        clearTimeout(lookupTimer.current);
-      }
+      if (lookupTimer.current) clearTimeout(lookupTimer.current);
     };
-  }, [draft.title, onGoogleLookup]);
+  // onGoogleLookup is a stable module-level function; omit to avoid spurious re-runs.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.title]);
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.scrollContent}>
       <Text style={styles.sectionTitle}>New Listing</Text>
       <SecondaryButton
-        label={autofilling ? 'Searching Google Books…' : 'Search Google Books again'}
+        label={autofilling ? 'Searching Google Books…' : (draft.author ? 'Search Google Books again' : 'Search Google Books')}
         icon="search-outline"
         loading={autofilling}
         onPress={() => {
@@ -1685,9 +1684,8 @@ function AddListingScreen({
             return;
           }
           setAutofilling(true);
-          runLookup(draft.title)
-            .catch(() => undefined)
-            .finally(() => setAutofilling(false));
+          // showError=true on manual press so the user knows what went wrong.
+          runLookup(draft.title, true).finally(() => setAutofilling(false));
         }}
       />
       <View style={styles.coverPreviewWrap}>

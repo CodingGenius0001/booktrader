@@ -44,6 +44,16 @@ jobs:
           distribution: temurin
           java-version: 21
 
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.android/build-cache
+          key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: gradle-
+
       - name: Install dependencies
         run: npm ci
 
@@ -71,9 +81,12 @@ jobs:
       - name: Set Android versionCode to build number
         run: sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/" android/app/build.gradle
 
+      - name: Enable Gradle build cache
+        run: echo "org.gradle.caching=true" >> android/gradle.properties
+
       - name: Build release APK
         working-directory: android
-        run: ./gradlew assembleRelease --no-daemon
+        run: ./gradlew assembleRelease --no-daemon --build-cache --parallel
 
       - name: Rename APK for stable download URL
         run: cp android/app/build/outputs/apk/release/app-release.apk booktrader.apk
@@ -98,11 +111,6 @@ jobs:
             1. Download `booktrader.apk` below.
             2. Open the file on your Android device.
             3. Enable *Install from unknown sources* in Settings if prompted.
-
-            ### Stable download link (always points to the latest build)
-            ```
-            https://github.com/CodingGenius0001/booktrader/releases/latest/download/booktrader.apk
-            ```
           files: booktrader.apk
           fail_on_unmatched_files: true
           make_latest: "true"

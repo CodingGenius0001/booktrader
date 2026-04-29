@@ -280,8 +280,8 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [demoProfile, setDemoProfile] = useState<UserProfile>(demoUser);
   const [demoMode, setDemoMode] = useState(!hasFirebaseConfig);
-  const [listings, setListings] = useState<BookListing[]>(demoListings);
-  const [offers, setOffers] = useState<TradeOffer[]>(demoOffers);
+  const [listings, setListings] = useState<BookListing[]>(hasFirebaseConfig ? [] : demoListings);
+  const [offers, setOffers] = useState<TradeOffer[]>(hasFirebaseConfig ? [] : demoOffers);
   const [activeTab, setActiveTab] = useState<TabKey>('market');
   const [busy, setBusy] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState<{ build: number; apkUrl: string } | null>(null);
@@ -884,7 +884,8 @@ export default function App() {
       setActiveTab('market');
       return;
     }
-
+    // Clear Google native session so account picker appears next login
+    GoogleSignin.signOut().catch(() => undefined);
     if (firebase.auth) {
       await signOut(firebase.auth);
     }
@@ -900,6 +901,33 @@ export default function App() {
         busy={busy}
         onEmailAuth={handleEmailAuth}
         onGoogle={handleGoogleSignIn}
+      />
+    );
+  }
+
+  // Block email/password accounts that haven't verified their email yet.
+  // Google accounts are pre-verified by Google.
+  const isEmailProvider = firebaseUser?.providerData.some((p) => p.providerId === 'password');
+  if (!demoMode && firebaseUser && isEmailProvider && !firebaseUser.emailVerified) {
+    return (
+      <EmailVerificationGate
+        email={firebaseUser.email ?? ''}
+        onResend={async () => {
+          const { sendEmailVerification } = await import('firebase/auth');
+          await sendEmailVerification(firebaseUser).catch((e: Error) =>
+            Alert.alert('Could not send email', e.message),
+          );
+          Alert.alert('Email sent', 'Check your inbox and spam folder.');
+        }}
+        onRefresh={async () => {
+          await firebaseUser.reload();
+          if (firebaseUser.emailVerified) {
+            setFirebaseUser({ ...firebaseUser } as User);
+          } else {
+            Alert.alert('Not verified yet', 'Click the link in the email we sent you.');
+          }
+        }}
+        onSignOut={handleSignOut}
       />
     );
   }
@@ -921,7 +949,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
       {pendingUpdate && (
         <UpdateBanner
           build={pendingUpdate.build}
@@ -983,6 +1011,55 @@ function LoadingScreen() {
   );
 }
 
+function EmailVerificationGate({
+  email,
+  onResend,
+  onRefresh,
+  onSignOut,
+}: {
+  email: string;
+  onResend: () => Promise<void>;
+  onRefresh: () => Promise<void>;
+  onSignOut: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  async function wrap(fn: () => Promise<void>) {
+    setBusy(true);
+    try { await fn(); } finally { setBusy(false); }
+  }
+
+  return (
+    <SafeAreaView style={[styles.safeArea, styles.center]}>
+      <StatusBar style="light" />
+      <View style={styles.verifyCard}>
+        <Ionicons name="mail-unread-outline" size={48} color={colors.teal} />
+        <Text style={styles.verifyTitle}>Verify your email</Text>
+        <Text style={styles.verifyBody}>
+          We sent a verification link to{'\n'}
+          <Text style={{ color: colors.ink, fontWeight: '800' }}>{email}</Text>
+          {'\n\n'}Click the link in that email, then tap the button below.
+        </Text>
+        <PrimaryButton
+          label="I've verified — continue"
+          icon="checkmark-circle-outline"
+          loading={busy}
+          onPress={() => wrap(onRefresh)}
+        />
+        <SecondaryButton
+          label="Resend verification email"
+          icon="send-outline"
+          loading={busy}
+          onPress={() => wrap(onResend)}
+        />
+        <Pressable onPress={onSignOut} style={{ marginTop: spacing.sm }}>
+          <Text style={styles.mutedText}>Use a different account</Text>
+        </Pressable>
+      </View>
+    </SafeAreaView>
+  );
+}
+
 function Header({ profile, demoMode }: { profile: UserProfile; demoMode: boolean }) {
   return (
     <View style={styles.header}>
@@ -1032,7 +1109,7 @@ function AuthScreen({
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.flexOne}
@@ -1153,7 +1230,7 @@ function ProfileOnboarding({
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.flexOne}
@@ -2708,14 +2785,16 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   modalBackdrop: {
-    backgroundColor: 'rgba(9, 18, 15, 0.38)',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
     flex: 1,
     justifyContent: 'flex-end',
   },
   modalSheet: {
-    backgroundColor: colors.background,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
+    borderWidth: 1,
     padding: spacing.lg,
   },
   modalHeader: {
@@ -2751,7 +2830,7 @@ const styles = StyleSheet.create({
   },
   messageBubbleOwn: {
     alignSelf: 'flex-end',
-    backgroundColor: '#DDEDEA',
+    backgroundColor: colors.surfaceHigh,
   },
   messageName: {
     color: colors.muted,
@@ -2787,8 +2866,10 @@ const styles = StyleSheet.create({
   mutualMatchBadge: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    backgroundColor: '#DDEDEA',
+    backgroundColor: colors.surfaceHigh,
+    borderColor: colors.teal,
     borderRadius: 999,
+    borderWidth: 1,
     flexDirection: 'row',
     gap: 4,
     marginTop: spacing.xs,
@@ -2813,7 +2894,7 @@ const styles = StyleSheet.create({
     width: 120,
   },
   offerBookCardSelected: {
-    backgroundColor: '#DDEDEA',
+    backgroundColor: colors.surfaceHigh,
     borderColor: colors.teal,
     borderWidth: 2,
   },
@@ -2868,6 +2949,28 @@ const styles = StyleSheet.create({
   forgotLinkText: {
     color: colors.muted,
     fontSize: 13,
+  },
+  verifyCard: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    gap: spacing.md,
+    margin: spacing.lg,
+    padding: spacing.xl,
+  },
+  verifyTitle: {
+    color: colors.ink,
+    fontSize: 22,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  verifyBody: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 22,
+    textAlign: 'center',
   },
   buildLabel: {
     color: colors.border,

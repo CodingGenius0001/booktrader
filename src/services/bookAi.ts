@@ -22,9 +22,9 @@ const EMPTY_DRAFT: BookDraft = {
   description: '',
 };
 
-// In-memory cache keyed by normalised query — avoids hammering the API
-// on every debounce tick when the user pauses on the same title.
+// In-memory caches — avoids hammering the API on debounce ticks.
 const cache = new Map<string, BookDraft>();
+const suggestionsCache = new Map<string, BookDraft[]>();
 
 function normalizeDraft(v: Partial<BookDraft>): BookDraft {
   return {
@@ -83,6 +83,51 @@ async function fetchBooks(q: string): Promise<BooksApiResponse> {
   } catch {
     throw new Error('Google Books returned an unexpected response format.');
   }
+}
+
+export async function searchBookSuggestions(query: string): Promise<BookDraft[]> {
+  const raw = query.trim();
+  if (raw.length < 2) return [];
+
+  const normalised = raw.toLowerCase().replace(/(?:^|\s)\S/g, (c) => c.toUpperCase());
+  const cacheKey = `sug:${normalised.toLowerCase()}`;
+  const cached = suggestionsCache.get(cacheKey);
+  if (cached) return cached;
+
+  let payload: BooksApiResponse;
+  try {
+    payload = await fetchBooks(normalised);
+    if (payload.error) return [];
+    if (!payload.items?.length) {
+      payload = await fetchBooks(`intitle:${normalised}`);
+      if (payload.error) return [];
+    }
+  } catch {
+    return [];
+  }
+
+  if (!payload.items?.length) return [];
+
+  const results = payload.items
+    .filter((item) => item.volumeInfo?.title)
+    .slice(0, 5)
+    .map((item) => {
+      const v = item.volumeInfo;
+      const isbn =
+        v.industryIdentifiers?.find((id) => id.type === 'ISBN_13')?.identifier ??
+        v.industryIdentifiers?.find((id) => id.type === 'ISBN_10')?.identifier;
+      return normalizeDraft({
+        title: v.title,
+        author: v.authors?.join(', '),
+        edition: v.publishedDate,
+        description: v.description,
+        isbn,
+        coverImageUrl: bestCoverUrl(v.imageLinks),
+      });
+    });
+
+  suggestionsCache.set(cacheKey, results);
+  return results;
 }
 
 export async function lookupBookFromGoogleBooks(query: string): Promise<BookDraft> {

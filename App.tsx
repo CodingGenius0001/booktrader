@@ -60,7 +60,7 @@ import {
 
 import { firebase, hasFirebaseConfig } from './src/config/firebase';
 import { demoListings, demoOffers, demoUser } from './src/data/demo';
-import { lookupBookFromGoogleBooks } from './src/services/bookAi';
+import { searchBookSuggestions } from './src/services/bookAi';
 import { colors, fonts, radii, spacing } from './src/theme';
 import {
   BookDraft,
@@ -296,7 +296,7 @@ function mapOffer(id: string, value: Record<string, unknown>): TradeOffer {
 }
 
 export default function App() {
-  const [fontsLoaded] = useFonts({ PlayfairDisplay_700Bold, PlayfairDisplay_400Regular_Italic });
+  const [fontsLoaded, fontError] = useFonts({ PlayfairDisplay_700Bold, PlayfairDisplay_400Regular_Italic });
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(hasFirebaseConfig);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -452,10 +452,12 @@ export default function App() {
     const unsubIn = onSnapshot(
       query(collection(db, 'tradeOffers'), where('listingOwnerId', '==', currentUserId), orderBy('updatedAt', 'desc')),
       (snap) => mergeAndNotify(snap.docs.map((d) => mapOffer(d.id, d.data())), 'in'),
+      (err) => Alert.alert('Sync error (incoming)', err.message + (err.code ? ` (${err.code})` : '')),
     );
     const unsubOut = onSnapshot(
       query(collection(db, 'tradeOffers'), where('requesterId', '==', currentUserId), orderBy('updatedAt', 'desc')),
       (snap) => mergeAndNotify(snap.docs.map((d) => mapOffer(d.id, d.data())), 'out'),
+      (err) => Alert.alert('Sync error (outgoing)', err.message + (err.code ? ` (${err.code})` : '')),
     );
 
     return () => {
@@ -949,6 +951,7 @@ export default function App() {
       if (status === 'accepted') {
         // Step 1 (critical): accept this specific offer
         await updateDoc(doc(db, 'tradeOffers', offer.id), { status: 'accepted', updatedAt });
+        Alert.alert('Trade accepted!', `${offer.requesterName} will be notified. Chat to arrange the meetup.`);
 
         // Step 2: mark listing as claimed (non-critical — don't let failure roll back step 1)
         updateDoc(doc(db, 'listings', offer.listingId), {
@@ -979,6 +982,7 @@ export default function App() {
 
       if (status === 'declined') {
         await updateDoc(doc(db, 'tradeOffers', offer.id), { status: 'declined', updatedAt });
+        Alert.alert('Offer declined', 'The requester has been notified.');
         // If this offer had claimed the listing, reset it to open
         getDoc(doc(db, 'listings', offer.listingId)).then((snap) => {
           const data = snap.data();
@@ -1033,20 +1037,30 @@ export default function App() {
       createdAt: now(),
     };
     const messages = [...offer.messages, message];
+    const updatedAt = now();
+
+    // Optimistic update — show message immediately without waiting for Firestore
+    setOffers((current) =>
+      current.map((item) =>
+        item.id === offer.id ? { ...item, messages, updatedAt } : item,
+      ),
+    );
 
     if (demoMode || !firebase.db) {
-      setOffers((current) =>
-        current.map((item) =>
-          item.id === offer.id ? { ...item, messages, updatedAt: now() } : item,
-        ),
-      );
       return;
     }
 
-    await updateDoc(doc(firebase.db, 'tradeOffers', offer.id), {
-      messages,
-      updatedAt: now(),
-    });
+    try {
+      await updateDoc(doc(firebase.db, 'tradeOffers', offer.id), { messages, updatedAt });
+    } catch (error) {
+      // Revert optimistic update on failure
+      setOffers((current) =>
+        current.map((item) =>
+          item.id === offer.id ? { ...item, messages: offer.messages } : item,
+        ),
+      );
+      Alert.alert('Message failed', error instanceof Error ? error.message : 'Try again.');
+    }
   }
 
   async function rateTrade(offer: TradeOffer, rating: number, reviewText: string) {
@@ -1104,7 +1118,7 @@ export default function App() {
     }
   }
 
-  if (!fontsLoaded || authLoading || profileLoading) {
+  if ((!fontsLoaded && !fontError) || authLoading || profileLoading) {
     return <LoadingScreen />;
   }
 
@@ -1188,7 +1202,7 @@ export default function App() {
         {activeTab === 'add' && (
           <AddListingScreen
             busy={busy}
-            onGoogleLookup={lookupBookFromGoogleBooks}
+            onSearchBooks={searchBookSuggestions}
             onPublish={publishListing}
           />
         )}
@@ -1286,7 +1300,8 @@ function EmailVerificationGate({
         <Text style={styles.verifyBody}>
           We sent a verification link to{'\n'}
           <Text style={{ color: colors.ink, fontWeight: '800' }}>{email}</Text>
-          {'\n\n'}Open the email and tap the link, then come back here.
+          {'\n\n'}Open the email and tap the link. It's not a code — click the link directly.{'\n\n'}
+          <Text style={{ color: colors.muted, fontSize: 12 }}>Not seeing it? Check your Spam or Promotions folder and search for "noreply@". Also check that the email above is spelled correctly.</Text>
         </Text>
         <PrimaryButton
           label="I've verified — continue"
@@ -1716,13 +1731,17 @@ function wantsYourBook(listing: BookListing, myListings: BookListing[]): boolean
   });
 }
 
+function toTitleCase(str: string): string {
+  return str.toLowerCase().replace(/(?:^|\s)\S/g, (c) => c.toUpperCase());
+}
+
 function AddListingScreen({
   busy,
-  onGoogleLookup,
+  onSearchBooks,
   onPublish,
 }: {
   busy: boolean;
-  onGoogleLookup: (query: string) => Promise<BookDraft>;
+  onSearchBooks: (query: string) => Promise<BookDraft[]>;
   onPublish: (input: {
     draft: BookDraft;
     wants: string;
@@ -1730,72 +1749,55 @@ function AddListingScreen({
 }) {
   const [draft, setDraft] = useState<BookDraft>(emptyDraft);
   const [wants, setWants] = useState('');
-  const [autofilling, setAutofilling] = useState(false);
-  const lookupTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  async function runLookup(query: string, showError = false) {
-    try {
-      const next = await onGoogleLookup(query);
-      setDraft((current) => ({
-        ...current,
-        ...next,
-        title: current.title,
-      }));
-    } catch (err) {
-      if (showError) {
-        Alert.alert(
-          'Google Books lookup failed',
-          err instanceof Error ? err.message : 'Check your internet connection and try again.',
-        );
-      }
-    }
-  }
+  const [suggestions, setSuggestions] = useState<BookDraft[]>([]);
+  const [searching, setSearching] = useState(false);
+  const suggestTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (lookupTimer.current) {
-      clearTimeout(lookupTimer.current);
-    }
-
+    if (suggestTimer.current) clearTimeout(suggestTimer.current);
     const title = draft.title.trim();
-
     if (title.length < 2) {
+      setSuggestions([]);
+      setSearching(false);
       return;
     }
-
-    let cancelled = false;
-    lookupTimer.current = setTimeout(() => {
-      setAutofilling(true);
-      // Silent on auto-lookup — user is still typing, an alert would be jarring.
-      runLookup(title, false).finally(() => {
-        if (!cancelled) setAutofilling(false);
-      });
-    }, 800);
-
+    setSearching(true);
+    suggestTimer.current = setTimeout(async () => {
+      try {
+        const results = await onSearchBooks(title);
+        setSuggestions(results);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 600);
     return () => {
-      cancelled = true;
-      if (lookupTimer.current) clearTimeout(lookupTimer.current);
+      if (suggestTimer.current) clearTimeout(suggestTimer.current);
     };
-  // onGoogleLookup is a stable module-level function; omit to avoid spurious re-runs.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.title]);
+
+  function selectSuggestion(s: BookDraft) {
+    setDraft(s);
+    setSuggestions([]);
+    setSearching(false);
+  }
+
+  function handlePublish() {
+    onPublish({
+      draft: {
+        ...draft,
+        title: toTitleCase(draft.title.trim()),
+        author: toTitleCase(draft.author.trim()),
+      },
+      wants,
+    });
+  }
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.scrollContent}>
       <Text style={styles.sectionTitle}>New Listing</Text>
-      <SecondaryButton
-        label={autofilling ? 'Searching Google Books…' : (draft.author ? 'Search Google Books again' : 'Search Google Books')}
-        icon="search-outline"
-        loading={autofilling}
-        onPress={() => {
-          if (!draft.title.trim()) {
-            Alert.alert('Title required', 'Enter a book title first, then tap to search.');
-            return;
-          }
-          setAutofilling(true);
-          // showError=true on manual press so the user knows what went wrong.
-          runLookup(draft.title, true).finally(() => setAutofilling(false));
-        }}
-      />
       <View style={styles.coverPreviewWrap}>
         <Text style={styles.label}>Cover preview</Text>
         {draft.coverImageUrl ? (
@@ -1803,29 +1805,64 @@ function AddListingScreen({
         ) : (
           <View style={styles.coverPreviewFallback}>
             <Ionicons name="book-outline" size={32} color={colors.teal} />
-            <Text style={styles.mutedText}>Type a title to fetch a cover from Google Books.</Text>
+            <Text style={styles.mutedText}>Type a title to see Google Books suggestions.</Text>
           </View>
         )}
       </View>
       <Field
         label="Title"
         value={draft.title}
-        onChangeText={(title) => setDraft((current) => ({ ...current, title }))}
+        onChangeText={(title) => {
+          setDraft((cur) => ({ ...cur, title }));
+          if (!title.trim()) setDraft(emptyDraft);
+        }}
       />
+      {(searching || suggestions.length > 0) && (
+        <View style={styles.suggestionsBox}>
+          {searching && suggestions.length === 0 && (
+            <View style={styles.suggestionRow}>
+              <ActivityIndicator size="small" color={colors.teal} />
+              <Text style={[styles.mutedText, { marginLeft: spacing.sm }]}>Searching Google Books…</Text>
+            </View>
+          )}
+          {suggestions.map((s, i) => (
+            <Pressable
+              key={i}
+              style={({ pressed }) => [styles.suggestionRow, pressed && { opacity: 0.65 }]}
+              onPress={() => selectSuggestion(s)}
+            >
+              {s.coverImageUrl ? (
+                <Image source={{ uri: s.coverImageUrl }} style={styles.suggestionCover} />
+              ) : (
+                <View style={[styles.suggestionCover, styles.suggestionCoverEmpty]}>
+                  <Ionicons name="book-outline" size={14} color={colors.teal} />
+                </View>
+              )}
+              <View style={styles.flex1}>
+                <Text style={styles.suggestionTitle} numberOfLines={1}>{s.title}</Text>
+                <Text style={styles.suggestionMeta} numberOfLines={1}>
+                  {[s.author, s.edition].filter(Boolean).join(' · ')}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={14} color={colors.muted} />
+            </Pressable>
+          ))}
+        </View>
+      )}
       <Field
         label="Author"
         value={draft.author}
-        onChangeText={(author) => setDraft((current) => ({ ...current, author }))}
+        onChangeText={(author) => setDraft((cur) => ({ ...cur, author }))}
       />
       <Field
-        label="Edition"
+        label="Edition / Year"
         value={draft.edition}
-        onChangeText={(edition) => setDraft((current) => ({ ...current, edition }))}
+        onChangeText={(edition) => setDraft((cur) => ({ ...cur, edition }))}
       />
       <Field
         label="Description"
         value={draft.description}
-        onChangeText={(description) => setDraft((current) => ({ ...current, description }))}
+        onChangeText={(description) => setDraft((cur) => ({ ...cur, description }))}
         multiline
       />
       <Field
@@ -1839,7 +1876,7 @@ function AddListingScreen({
         label="Publish for 14 days"
         icon="cloud-upload-outline"
         loading={busy}
-        onPress={() => onPublish({ draft, wants })}
+        onPress={handlePublish}
       />
     </ScrollView>
   );
@@ -3096,6 +3133,45 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 180,
     padding: spacing.lg,
+  },
+  suggestionsBox: {
+    backgroundColor: colors.surfaceMuted,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    marginBottom: spacing.sm,
+    overflow: 'hidden',
+  },
+  suggestionRow: {
+    alignItems: 'center',
+    borderBottomColor: colors.border,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    padding: spacing.sm,
+  },
+  suggestionCover: {
+    borderRadius: radii.sm,
+    height: 48,
+    width: 34,
+  },
+  suggestionCoverEmpty: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    justifyContent: 'center',
+  },
+  flex1: {
+    flex: 1,
+  },
+  suggestionTitle: {
+    color: colors.ink,
+    fontFamily: fonts.serif,
+    fontSize: 13,
+  },
+  suggestionMeta: {
+    color: colors.muted,
+    fontSize: 11,
+    marginTop: 2,
   },
   actionRow: {
     flexDirection: 'row',

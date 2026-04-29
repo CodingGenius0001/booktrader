@@ -1,9 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
+import * as FileSystem from 'expo-file-system/legacy';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
+import * as IntentLauncher from 'expo-intent-launcher';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -280,8 +282,11 @@ export default function App() {
   const [offers, setOffers] = useState<TradeOffer[]>(demoOffers);
   const [activeTab, setActiveTab] = useState<TabKey>('market');
   const [busy, setBusy] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<{ build: number; apkUrl: string } | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
 
-  const updateChecked = React.useRef(false);
+  const updateChecked = useRef(false);
+  const prevOffersRef = useRef<TradeOffer[]>([]);
 
 
   const currentProfile = demoMode ? demoProfile : profile;
@@ -337,15 +342,67 @@ export default function App() {
       return;
     }
 
-    const offersQuery = query(collection(firebase.db, 'tradeOffers'), orderBy('updatedAt', 'desc'));
-    return onSnapshot(offersQuery, (snapshot) => {
-      const next = snapshot.docs
-        .map((item) => mapOffer(item.id, item.data()))
-        .filter(
-          (item) => item.requesterId === currentUserId || item.listingOwnerId === currentUserId,
-        );
-      setOffers(next);
-    });
+    const db = firebase.db;
+    // Two separate queries to satisfy Firestore security rules (which restrict reads
+    // to participants only — a single unfiltered collection query would be rejected).
+    const incoming: TradeOffer[] = [];
+    const outgoing: TradeOffer[] = [];
+
+    function mergeAndNotify(updated: TradeOffer[], bucket: 'in' | 'out') {
+      if (bucket === 'in') incoming.splice(0, incoming.length, ...updated);
+      else outgoing.splice(0, outgoing.length, ...updated);
+
+      const merged = [...incoming];
+      outgoing.forEach((o) => {
+        if (!merged.find((m) => m.id === o.id)) merged.push(o);
+      });
+      merged.sort((a, b) => b.updatedAt - a.updatedAt);
+
+      // Fire local notifications for status / message changes
+      const prev = prevOffersRef.current;
+      if (prev.length > 0) {
+        merged.forEach((next) => {
+          const old = prev.find((o) => o.id === next.id);
+          if (!old) {
+            if (next.listingOwnerId === currentUserId) {
+              fireLocalNotification(
+                'New trade request',
+                `${next.requesterName} wants to trade for "${next.listingTitle}"`,
+              );
+            }
+          } else if (old.status !== next.status) {
+            if (next.status === 'accepted' && next.requesterId === currentUserId) {
+              fireLocalNotification('Trade accepted!', `${next.listingOwnerName} accepted your offer for "${next.listingTitle}"`);
+            } else if (next.status === 'declined' && next.requesterId === currentUserId) {
+              fireLocalNotification('Trade declined', `Your offer for "${next.listingTitle}" was declined.`);
+            } else if (next.status === 'completed') {
+              fireLocalNotification('Trade complete!', `"${next.listingTitle}" — tap to leave a rating.`);
+            }
+          } else if ((next.messages?.length ?? 0) > (old.messages?.length ?? 0)) {
+            const last = next.messages[next.messages.length - 1];
+            if (last && last.senderId !== currentUserId) {
+              fireLocalNotification(`${last.senderName}`, last.text);
+            }
+          }
+        });
+      }
+      prevOffersRef.current = merged;
+      setOffers(merged);
+    }
+
+    const unsubIn = onSnapshot(
+      query(collection(db, 'tradeOffers'), where('listingOwnerId', '==', currentUserId), orderBy('updatedAt', 'desc')),
+      (snap) => mergeAndNotify(snap.docs.map((d) => mapOffer(d.id, d.data())), 'in'),
+    );
+    const unsubOut = onSnapshot(
+      query(collection(db, 'tradeOffers'), where('requesterId', '==', currentUserId), orderBy('updatedAt', 'desc')),
+      (snap) => mergeAndNotify(snap.docs.map((d) => mapOffer(d.id, d.data())), 'out'),
+    );
+
+    return () => {
+      unsubIn();
+      unsubOut();
+    };
   }, [currentUserId, demoMode]);
 
 
@@ -369,14 +426,7 @@ export default function App() {
         const latestBuild = parseInt(data.tag_name.replace('build-', ''), 10);
         if (!isNaN(latestBuild) && latestBuild > CURRENT_BUILD) {
           const apkUrl = `https://github.com/${GITHUB_REPO}/releases/download/${data.tag_name}/booktrader.apk`;
-          Alert.alert(
-            'Update available',
-            `Build ${latestBuild} is ready (you have build ${CURRENT_BUILD}). Download the latest APK to get new features.`,
-            [
-              { text: 'Later', style: 'cancel' },
-              { text: 'Download update', onPress: () => Linking.openURL(apkUrl) },
-            ],
-          );
+          setPendingUpdate({ build: latestBuild, apkUrl });
         }
       })
       .catch(() => undefined);
@@ -477,6 +527,44 @@ export default function App() {
       Alert.alert('Google sign-in failed', error instanceof Error ? error.message : 'Try again.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  function fireLocalNotification(title: string, body: string) {
+    Notifications.scheduleNotificationAsync({
+      content: { title, body, sound: true },
+      trigger: null,
+    }).catch(() => undefined);
+  }
+
+  async function downloadAndInstall() {
+    if (!pendingUpdate) return;
+    try {
+      setDownloadProgress(0);
+      const dest = (FileSystem.cacheDirectory ?? '') + 'booktrader-update.apk';
+      const dl = FileSystem.createDownloadResumable(
+        pendingUpdate.apkUrl,
+        dest,
+        {},
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          setDownloadProgress(
+            totalBytesExpectedToWrite > 0 ? totalBytesWritten / totalBytesExpectedToWrite : 0,
+          );
+        },
+      );
+      const result = await dl.downloadAsync();
+      if (!result?.uri) throw new Error('Download failed');
+      const contentUri = await FileSystem.getContentUriAsync(result.uri);
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: contentUri,
+        flags: 1,
+        type: 'application/vnd.android.package-archive',
+      });
+      setDownloadProgress(null);
+      setPendingUpdate(null);
+    } catch {
+      setDownloadProgress(null);
+      Alert.alert('Download failed', 'Could not download the update. Try again later.');
     }
   }
 
@@ -796,9 +884,21 @@ export default function App() {
     );
   }
 
+  const pendingIncoming = offers.filter(
+    (o) => o.listingOwnerId === currentProfile.id && o.status === 'pending',
+  ).length;
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
+      {pendingUpdate && (
+        <UpdateBanner
+          build={pendingUpdate.build}
+          progress={downloadProgress}
+          onUpdate={downloadAndInstall}
+          onDismiss={() => setPendingUpdate(null)}
+        />
+      )}
       <View style={styles.appShell}>
         <Header profile={currentProfile} demoMode={demoMode || !hasFirebaseConfig} />
         {activeTab === 'market' && (
@@ -836,7 +936,7 @@ export default function App() {
           />
         )}
       </View>
-      <TabBar activeTab={activeTab} onChange={setActiveTab} />
+      <TabBar activeTab={activeTab} onChange={setActiveTab} badge={pendingIncoming} />
     </SafeAreaView>
   );
 }
@@ -1693,9 +1793,38 @@ function TradeCard({
   onRate: (rating: number) => void;
 }) {
   const [message, setMessage] = useState('');
+  const [rated, setRated] = useState(false);
+  const chatRef = useRef<ScrollView>(null);
   const isOwner = offer.listingOwnerId === currentProfile.id;
   const isAccepted = offer.status === 'accepted';
   const isCompleted = offer.status === 'completed';
+
+  useEffect(() => {
+    if (isAccepted) {
+      setTimeout(() => chatRef.current?.scrollToEnd({ animated: true }), 100);
+    }
+  }, [offer.messages.length, isAccepted]);
+
+  function confirmAccept() {
+    Alert.alert('Accept trade?', `Offer: ${offer.offeredBooks}`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Accept', onPress: onAccept },
+    ]);
+  }
+
+  function confirmDecline() {
+    Alert.alert('Decline trade?', 'This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Decline', style: 'destructive', onPress: onDecline },
+    ]);
+  }
+
+  function confirmComplete() {
+    Alert.alert('Mark as completed?', 'Confirm you both exchanged the books.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Complete', onPress: onComplete },
+    ]);
+  }
 
   return (
     <View style={styles.tradeCard}>
@@ -1713,16 +1842,23 @@ function TradeCard({
 
       {isOwner && offer.status === 'pending' && (
         <View style={styles.actionRow}>
-          <PrimaryButton label="Accept" icon="checkmark" compact onPress={onAccept} />
-          <SecondaryButton label="Decline" icon="close" compact onPress={onDecline} />
+          <PrimaryButton label="Accept" icon="checkmark" compact onPress={confirmAccept} />
+          <SecondaryButton label="Decline" icon="close" compact onPress={confirmDecline} />
         </View>
       )}
 
       {isAccepted && (
         <>
-          <View style={styles.chatBox}>
+          <ScrollView
+            ref={chatRef}
+            style={styles.chatBox}
+            nestedScrollEnabled
+            onContentSizeChange={() => chatRef.current?.scrollToEnd({ animated: false })}
+          >
             {offer.messages.length === 0 ? (
-              <Text style={styles.mutedText}>Chat opens after a trade is accepted.</Text>
+              <Text style={[styles.mutedText, { padding: spacing.sm }]}>
+                Trade accepted — chat to arrange meetup details.
+              </Text>
             ) : (
               offer.messages.map((item) => (
                 <View
@@ -1734,10 +1870,13 @@ function TradeCard({
                 >
                   <Text style={styles.messageName}>{item.senderName}</Text>
                   <Text style={styles.messageText}>{item.text}</Text>
+                  <Text style={styles.messageTime}>
+                    {new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
                 </View>
               ))
             )}
-          </View>
+          </ScrollView>
           <View style={styles.messageComposer}>
             <TextInput
               value={message}
@@ -1745,27 +1884,34 @@ function TradeCard({
               placeholder="Message"
               placeholderTextColor={colors.muted}
               style={styles.messageInput}
+              returnKeyType="send"
+              onSubmitEditing={() => {
+                if (message.trim()) { onSend(message); setMessage(''); }
+              }}
             />
             <IconButton
               icon="send"
               onPress={() => {
-                onSend(message);
-                setMessage('');
+                if (message.trim()) { onSend(message); setMessage(''); }
               }}
             />
           </View>
-          <PrimaryButton label="Mark completed" icon="checkmark-done" onPress={onComplete} />
+          <PrimaryButton label="Mark completed" icon="checkmark-done" onPress={confirmComplete} />
         </>
       )}
 
-      {isCompleted && (
+      {isCompleted && !rated && (
         <View style={styles.ratingRow}>
-          {[1, 2, 3, 4, 5].map((rating) => (
-            <Pressable key={rating} onPress={() => onRate(rating)} style={styles.starButton}>
+          <Text style={[styles.mutedText, { marginRight: spacing.sm }]}>Rate this trade:</Text>
+          {[1, 2, 3, 4, 5].map((r) => (
+            <Pressable key={r} onPress={() => { onRate(r); setRated(true); }} style={styles.starButton}>
               <Ionicons name="star" size={21} color={colors.brass} />
             </Pressable>
           ))}
         </View>
+      )}
+      {isCompleted && rated && (
+        <Text style={[styles.mutedText, { marginTop: spacing.sm }]}>Rating submitted. Thanks!</Text>
       )}
     </View>
   );
@@ -1922,12 +2068,53 @@ function EmptyState({ icon, title }: { icon: keyof typeof Ionicons.glyphMap; tit
   );
 }
 
+function UpdateBanner({
+  build,
+  progress,
+  onUpdate,
+  onDismiss,
+}: {
+  build: number;
+  progress: number | null;
+  onUpdate: () => void;
+  onDismiss: () => void;
+}) {
+  const downloading = progress !== null;
+  return (
+    <View style={styles.updateBanner}>
+      <View style={styles.updateBannerText}>
+        <Text style={styles.updateBannerTitle}>Update available — build {build}</Text>
+        {downloading ? (
+          <View style={styles.updateProgressBar}>
+            <View style={[styles.updateProgressFill, { width: `${Math.round(progress! * 100)}%` as unknown as number }]} />
+          </View>
+        ) : (
+          <Text style={styles.updateBannerSub}>Download and install in one tap</Text>
+        )}
+      </View>
+      {!downloading && (
+        <View style={styles.updateBannerActions}>
+          <Pressable onPress={onUpdate} style={styles.updateBtn}>
+            <Ionicons name="download-outline" size={16} color="#fff" />
+            <Text style={styles.updateBtnText}>Update</Text>
+          </Pressable>
+          <Pressable onPress={onDismiss} style={styles.updateDismiss}>
+            <Ionicons name="close" size={18} color={colors.muted} />
+          </Pressable>
+        </View>
+      )}
+    </View>
+  );
+}
+
 function TabBar({
   activeTab,
   onChange,
+  badge,
 }: {
   activeTab: TabKey;
   onChange: (tab: TabKey) => void;
+  badge?: number;
 }) {
   const tabs: { key: TabKey; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
     { key: 'market', label: 'Market', icon: 'storefront-outline' },
@@ -1940,13 +2127,17 @@ function TabBar({
     <View style={styles.tabBar}>
       {tabs.map((tab) => {
         const selected = activeTab === tab.key;
+        const showBadge = tab.key === 'trades' && badge && badge > 0;
         return (
           <Pressable key={tab.key} onPress={() => onChange(tab.key)} style={styles.tabButton}>
-            <Ionicons
-              name={tab.icon}
-              size={22}
-              color={selected ? colors.teal : colors.muted}
-            />
+            <View>
+              <Ionicons name={tab.icon} size={22} color={selected ? colors.teal : colors.muted} />
+              {showBadge && (
+                <View style={styles.tabBadge}>
+                  <Text style={styles.tabBadgeText}>{badge > 9 ? '9+' : badge}</Text>
+                </View>
+              )}
+            </View>
             <Text style={[styles.tabLabel, selected && styles.tabLabelSelected]}>{tab.label}</Text>
           </Pressable>
         );
@@ -2539,6 +2730,84 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: spacing.lg,
     textAlign: 'center',
+  },
+  updateBanner: {
+    alignItems: 'center',
+    backgroundColor: colors.tealDark,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+  },
+  updateBannerText: {
+    flex: 1,
+    gap: 4,
+  },
+  updateBannerTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  updateBannerSub: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
+  },
+  updateProgressBar: {
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 4,
+    height: 4,
+    marginTop: 4,
+    overflow: 'hidden',
+  },
+  updateProgressFill: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 4,
+    height: 4,
+  },
+  updateBannerActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  updateBtn: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: radii.sm,
+    flexDirection: 'row',
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+  },
+  updateBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  updateDismiss: {
+    padding: 4,
+  },
+  tabBadge: {
+    alignItems: 'center',
+    backgroundColor: colors.danger,
+    borderRadius: 8,
+    height: 16,
+    justifyContent: 'center',
+    minWidth: 16,
+    paddingHorizontal: 3,
+    position: 'absolute',
+    right: -6,
+    top: -4,
+  },
+  tabBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  messageTime: {
+    color: colors.muted,
+    fontSize: 10,
+    marginTop: 2,
   },
   tabBar: {
     alignItems: 'center',

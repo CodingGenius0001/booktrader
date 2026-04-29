@@ -103,8 +103,10 @@ type AuthMode = 'login' | 'register';
 const LISTING_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_COMMUNITY = 'Prestige Shantiniketan, Whitefield';
 const DEFAULT_CITY = 'Bengaluru';
+const APP_VERSION = '0.1.2';
 const CURRENT_BUILD = parseInt(process.env.EXPO_PUBLIC_BUILD_NUMBER ?? '0', 10);
 const GITHUB_REPO = 'CodingGenius0001/booktrader';
+const FIREBASE_PROJECT_ID = process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID ?? '';
 const LAST_OFFERS_KEY = '@bt_last_offers';
 type OfferSnap = { id: string; status: string; msgCount: number };
 
@@ -585,8 +587,13 @@ export default function App() {
         );
 
         // Send verification email immediately (before the slow GPS call).
+        // Explicit continueUrl uses the Firebase project's default hosting domain
+        // which is always in the Authorized Domains list, improving deliverability.
         try {
-          await sendEmailVerification(created.user);
+          const continueUrl = FIREBASE_PROJECT_ID
+            ? `https://${FIREBASE_PROJECT_ID}.firebaseapp.com`
+            : undefined;
+          await sendEmailVerification(created.user, continueUrl ? { url: continueUrl, handleCodeInApp: false } : undefined);
         } catch (verifyErr) {
           const code = verifyErr instanceof Error ? (verifyErr as {code?: string}).code : undefined;
           Alert.alert(
@@ -761,24 +768,29 @@ export default function App() {
     );
   }
 
-  async function handleProfileComplete(values: {
-    legalName: string;
-    city: string;
-    community: string;
-    wishlist: string[];
-  }) {
-    const userId = firebaseUser?.uid ?? demoProfile.id;
-    const coordinates = await requestCoordinates();
-
-    await saveProfile(userId, {
-      legalName: values.legalName.trim(),
-      email: firebaseUser?.email ?? demoProfile.email,
-      city: values.city.trim() || DEFAULT_CITY,
-      community: values.community.trim() || DEFAULT_COMMUNITY,
-      coordinates,
-      wishlist: values.wishlist,
-      photoUrl: firebaseUser?.photoURL,
-    });
+  async function handleProfileComplete(
+    values: { legalName: string; city: string; community: string; wishlist: string[] },
+    opts: { feedback?: boolean } = {},
+  ) {
+    try {
+      setBusy(true);
+      const userId = firebaseUser?.uid ?? demoProfile.id;
+      const coordinates = await requestCoordinates();
+      await saveProfile(userId, {
+        legalName: values.legalName.trim(),
+        email: firebaseUser?.email ?? demoProfile.email,
+        city: values.city.trim() || DEFAULT_CITY,
+        community: values.community.trim() || DEFAULT_COMMUNITY,
+        coordinates,
+        wishlist: values.wishlist,
+        photoUrl: firebaseUser?.photoURL,
+      });
+      if (opts.feedback) Alert.alert('Profile saved', 'Your profile has been updated.');
+    } catch (error) {
+      Alert.alert('Save failed', error instanceof Error ? error.message : 'Try again.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function publishListing(input: {
@@ -839,6 +851,7 @@ export default function App() {
       }
 
       await scheduleExpiryReminder(listing.title);
+      Alert.alert('Listing published!', `"${listing.title}" is now live on the marketplace for 14 days.`);
       setActiveTab('market');
     } catch (error) {
       Alert.alert('Publish failed', error instanceof Error ? error.message : 'Try again.');
@@ -848,20 +861,30 @@ export default function App() {
   }
 
   async function editListing(listingId: string, patch: Partial<Pick<BookListing, 'title' | 'author' | 'edition' | 'description' | 'wants'>>) {
-    if (demoMode || !firebase.db) {
-      setListings((cur) => cur.map((l) => (l.id === listingId ? { ...l, ...patch } : l)));
-      return;
+    try {
+      if (demoMode || !firebase.db) {
+        setListings((cur) => cur.map((l) => (l.id === listingId ? { ...l, ...patch } : l)));
+      } else {
+        await updateDoc(doc(firebase.db, 'listings', listingId), { ...patch, updatedAt: now() });
+      }
+      Alert.alert('Listing updated', 'Your changes have been saved.');
+    } catch (error) {
+      Alert.alert('Update failed', error instanceof Error ? error.message : 'Try again.');
     }
-    await updateDoc(doc(firebase.db, 'listings', listingId), { ...patch, updatedAt: now() });
   }
 
   async function deleteListing(listingId: string) {
-    if (demoMode || !firebase.db) {
-      setListings((cur) => cur.filter((l) => l.id !== listingId));
-      return;
+    try {
+      if (demoMode || !firebase.db) {
+        setListings((cur) => cur.filter((l) => l.id !== listingId));
+      } else {
+        const { deleteDoc } = await import('firebase/firestore');
+        await deleteDoc(doc(firebase.db, 'listings', listingId));
+      }
+      Alert.alert('Listing deleted', 'Your listing has been removed from the marketplace.');
+    } catch (error) {
+      Alert.alert('Delete failed', error instanceof Error ? error.message : 'Try again.');
     }
-    const { deleteDoc } = await import('firebase/firestore');
-    await deleteDoc(doc(firebase.db, 'listings', listingId));
   }
 
   async function requestTrade(listing: BookListing, offeredBooks: string, note: string) {
@@ -935,6 +958,7 @@ export default function App() {
         const newCompletedBy = [...new Set([...(offer.completedBy ?? []), currentProfile.id])];
         const bothDone = newCompletedBy.includes(offer.listingOwnerId)
                       && newCompletedBy.includes(offer.requesterId);
+        const otherName = currentProfile.id === offer.listingOwnerId ? offer.requesterName : offer.listingOwnerName;
         setOffers((cur) => cur.map((o) =>
           o.id === offer.id ? { ...o, completedBy: newCompletedBy, ...(bothDone ? { status: 'completed' as const } : {}) } : o,
         ));
@@ -942,6 +966,9 @@ export default function App() {
           setListings((cur) => cur.map((l) =>
             l.id === offer.listingId ? { ...l, status: 'completed' } : l,
           ));
+          Alert.alert('Trade complete! 🎉', `Both sides confirmed. You can now leave a rating for ${otherName}.`);
+        } else {
+          Alert.alert('Return confirmed', `Waiting for ${otherName} to confirm their side.`);
         }
         return;
       }
@@ -1015,17 +1042,22 @@ export default function App() {
         const bothDone = newCompletedBy.includes(offer.listingOwnerId)
                       && newCompletedBy.includes(offer.requesterId);
 
+        const otherName = currentProfile.id === offer.listingOwnerId
+          ? offer.requesterName
+          : offer.listingOwnerName;
         if (bothDone) {
           await updateDoc(doc(db, 'tradeOffers', offer.id), {
             status: 'completed', completedBy: newCompletedBy, updatedAt,
           });
           updateDoc(doc(db, 'listings', offer.listingId), { status: 'completed' })
             .catch(() => undefined);
+          Alert.alert('Trade complete! 🎉', `Both sides confirmed. You can now leave a rating for ${otherName}.`);
         } else {
           // First confirmation only — record who confirmed, keep status 'accepted'
           await updateDoc(doc(db, 'tradeOffers', offer.id), {
             completedBy: newCompletedBy, updatedAt,
           });
+          Alert.alert('Return confirmed', `Waiting for ${otherName} to confirm their side. Once they do, the trade will close.`);
         }
         return;
       }
@@ -1153,10 +1185,11 @@ export default function App() {
         email={firebaseUser.email ?? ''}
         onResend={async () => {
           try {
-            await sendEmailVerification(firebaseUser);
+            const continueUrl = FIREBASE_PROJECT_ID ? `https://${FIREBASE_PROJECT_ID}.firebaseapp.com` : undefined;
+            await sendEmailVerification(firebaseUser, continueUrl ? { url: continueUrl, handleCodeInApp: false } : undefined);
             Alert.alert(
-              'Email sent',
-              `Sent to ${firebaseUser.email}.\n\nCheck spam and search for "noreply@" — Firebase sends from noreply@<project-id>.firebaseapp.com`,
+              'Verification email sent',
+              `Sent to ${firebaseUser.email}.\n\nCheck your Spam / Promotions folder if you don't see it. Search for "noreply@${FIREBASE_PROJECT_ID}.firebaseapp.com".`,
             );
           } catch (e) {
             const code = e instanceof Error ? (e as {code?: string}).code : undefined;
@@ -1247,8 +1280,9 @@ export default function App() {
         )}
         {activeTab === 'profile' && (
           <ProfileScreen
+            busy={busy}
             profile={currentProfile}
-            onSave={handleProfileComplete}
+            onSave={(values) => handleProfileComplete(values, { feedback: true })}
             updateChecking={updateChecking}
             upToDate={upToDate}
             pendingUpdate={pendingUpdate}
@@ -2068,6 +2102,7 @@ function TradesScreen({
 }
 
 function ProfileScreen({
+  busy,
   profile,
   onSave,
   onPhotoChange,
@@ -2079,6 +2114,7 @@ function ProfileScreen({
   onCheckUpdate,
   onInstallUpdate,
 }: {
+  busy: boolean;
   profile: UserProfile;
   onSave: (values: { legalName: string; city: string; community: string; wishlist: string[] }) => void;
   onPhotoChange: (photoUrl: string) => Promise<void>;
@@ -2111,6 +2147,9 @@ function ProfileScreen({
     setUploadingPhoto(true);
     try {
       await onPhotoChange(result.assets[0].uri);
+      Alert.alert('Photo updated', 'Your profile picture has been saved.');
+    } catch {
+      Alert.alert('Upload failed', 'Could not save your photo. Try again.');
     } finally {
       setUploadingPhoto(false);
     }
@@ -2145,6 +2184,7 @@ function ProfileScreen({
       <PrimaryButton
         label="Save profile"
         icon="save-outline"
+        loading={busy}
         onPress={() =>
           onSave({
             legalName,
@@ -2160,7 +2200,7 @@ function ProfileScreen({
           <Ionicons name="cloud-download-outline" size={18} color={colors.teal} />
           <Text style={styles.updatesTitle}>Updates</Text>
           <Text style={styles.updatesBuild}>
-            v0.1.0{CURRENT_BUILD > 0 ? ` · build ${CURRENT_BUILD}` : ''}
+            v{APP_VERSION}{CURRENT_BUILD > 0 ? ` · build ${CURRENT_BUILD}` : ''}
           </Text>
         </View>
 

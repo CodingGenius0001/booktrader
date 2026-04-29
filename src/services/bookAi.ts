@@ -54,32 +54,43 @@ function pickBestItem(items: BooksApiResponse['items']): VolumeInfo | null {
   );
 }
 
-export async function lookupBookFromGoogleBooks(query: string): Promise<BookDraft> {
-  if (!query.trim()) return EMPTY_DRAFT;
-
-  // No API key — Google Books allows unauthenticated requests (1 000/day per IP),
-  // which is more than enough for this app. Sending the Firebase key would cause
-  // a 403 unless the Books API is explicitly enabled on the same GCP project.
+async function fetchBooks(q: string): Promise<BooksApiResponse> {
   const url =
     `https://www.googleapis.com/books/v1/volumes` +
-    `?q=${encodeURIComponent(query.trim())}` +
-    `&maxResults=5&printType=books&orderBy=relevance`;
-
+    `?q=${encodeURIComponent(q)}&maxResults=5&printType=books&orderBy=relevance`;
   const response = await fetch(url, { headers: { Accept: 'application/json' } });
-
   if (!response.ok) {
     throw new Error(`Google Books API returned ${response.status}: ${response.statusText}`);
   }
-
-  let payload: BooksApiResponse;
   try {
-    payload = (await response.json()) as BooksApiResponse;
+    return (await response.json()) as BooksApiResponse;
   } catch {
     throw new Error('Google Books returned an unexpected response format.');
   }
+}
+
+export async function lookupBookFromGoogleBooks(query: string): Promise<BookDraft> {
+  const raw = query.trim();
+  if (!raw) return EMPTY_DRAFT;
+
+  // Normalise casing: "the secret" → "The Secret" so Google's title-field
+  // matching is more reliable for partial or all-lowercase input.
+  const normalised = raw
+    .toLowerCase()
+    .replace(/(?:^|\s)\S/g, (c) => c.toUpperCase());
+
+  // First attempt: plain keyword search with the normalised query.
+  let payload = await fetchBooks(normalised);
 
   if (payload.error) {
     throw new Error(`Google Books: ${payload.error.message}`);
+  }
+
+  // If keyword search found nothing, retry with an explicit intitle: field
+  // query — handles cases like all-lowercase or unusual punctuation.
+  if (!payload.items?.length) {
+    payload = await fetchBooks(`intitle:${normalised}`);
+    if (payload.error) throw new Error(`Google Books: ${payload.error.message}`);
   }
 
   const volumeInfo = pickBestItem(payload.items);

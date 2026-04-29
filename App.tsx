@@ -73,12 +73,23 @@ GoogleSignin.configure({
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldPlaySound: false,
+    shouldPlaySound: true,
     shouldSetBadge: false,
     shouldShowBanner: true,
     shouldShowList: true,
   }),
 });
+
+// Android requires an explicit notification channel or notifications are silently dropped.
+if (Platform.OS === 'android') {
+  Notifications.setNotificationChannelAsync('default', {
+    name: 'BookTrader',
+    importance: Notifications.AndroidImportance.HIGH,
+    vibrationPattern: [0, 200, 100, 200],
+    lightColor: '#C8A84B',
+    sound: 'default',
+  }).catch(() => undefined);
+}
 
 type TabKey = 'market' | 'add' | 'trades' | 'profile';
 type AuthMode = 'login' | 'register';
@@ -647,6 +658,10 @@ export default function App() {
         const apkUrl = `https://github.com/${GITHUB_REPO}/releases/latest/download/booktrader.apk`;
         setPendingUpdate({ build: latestBuild, apkUrl });
         setUpToDate(false);
+        fireLocalNotification(
+          'BookTrader update available',
+          `Build ${latestBuild} is ready — tap to install from the Profile tab.`,
+        );
       } else {
         setPendingUpdate(null);
         setUpToDate(true);
@@ -660,7 +675,7 @@ export default function App() {
 
   function fireLocalNotification(title: string, body: string) {
     Notifications.scheduleNotificationAsync({
-      content: { title, body, sound: true },
+      content: { title, body, sound: true, ...(Platform.OS === 'android' && { channelId: 'default' }) },
       trigger: null,
     }).catch(() => undefined);
   }

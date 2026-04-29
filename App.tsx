@@ -480,10 +480,14 @@ export default function App() {
           wishlist: [],
           photoUrl: created.user.photoURL,
         });
-        // Send verification email — must happen after saveProfile so Firebase Auth
-        // is fully initialised. Errors are surfaced rather than swallowed.
+        // ActionCodeSettings tells Firebase where to redirect after the user
+        // clicks the link. Using the Firebase auth domain (always authorized).
+        const actionCodeSettings = {
+          url: `https://${process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? ''}`,
+          handleCodeInApp: false,
+        };
         try {
-          await sendEmailVerification(created.user);
+          await sendEmailVerification(created.user, actionCodeSettings);
         } catch (verifyErr) {
           Alert.alert(
             'Could not send verification email',
@@ -493,7 +497,7 @@ export default function App() {
         }
         Alert.alert(
           'Check your inbox',
-          `A verification link was sent to ${input.email.trim()}.\n\nIf you don't see it within a minute, check your spam / junk folder.`,
+          `A verification link was sent to ${input.email.trim()}.\n\nCheck your spam / junk folder if it doesn't appear within 2 minutes.\n\nSearch for: noreply@`,
         );
       } else {
         await signInWithEmailAndPassword(firebase.auth, input.email.trim(), input.password);
@@ -927,10 +931,13 @@ export default function App() {
         email={firebaseUser.email ?? ''}
         onResend={async () => {
           try {
-            await sendEmailVerification(firebaseUser);
+            await sendEmailVerification(firebaseUser, {
+              url: `https://${process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ?? ''}`,
+              handleCodeInApp: false,
+            });
             Alert.alert(
               'Email sent',
-              'Check your inbox — and your spam / junk folder if it doesn\'t appear within a minute.',
+              `Sent to ${firebaseUser.email}.\n\nCheck your spam / junk folder and search for: noreply@`,
             );
           } catch (e) {
             Alert.alert(
